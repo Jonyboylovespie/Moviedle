@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moviedle Randomizer</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #141414;
+            color: #ffffff;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 1.2rem;
+            cursor: pointer;
+            background-color: #e50914;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            margin-bottom: 30px;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #f40612;
+        }
+        #movie-display {
+            text-align: center;
+            max-width: 600px;
+            width: 100%;
+            padding: 20px;
+            background-color: #222222;
+            border-radius: 10px;
+            min-height: 150px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        #movie-title {
+            font-size: 2rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #ffffff;
+        }
+        #movie-info {
+            font-size: 1rem;
+            color: #b3b3b3;
+            line-height: 1.5;
+        }
+        .poster {
+            width: 200px;
+            border-radius: 10px;
+            margin-top: 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body>
+    <button id="random-btn">Get Random Movie</button>
+    <div id="movie-display">
+        <div id="movie-title">Press the button to get a random movie!</div>
+        <div id="movie-info"></div>
+        <img id="movie-poster" class="poster" style="display: none;" alt="Movie Poster" />
+    </div>
+
+    <script>
+        const btn = document.getElementById('random-btn');
+        const titleEl = document.getElementById('movie-title');
+        const infoEl = document.getElementById('movie-info');
+        const posterEl = document.getElementById('movie-poster');
+
+        btn.addEventListener('click', async () => {
+            titleEl.textContent = "Loading...";
+            infoEl.textContent = "";
+            posterEl.style.display = 'none';
+
+            try {
+                const response = await fetch('/random-movie');
+                const data = await response.json();
+
+                if (data.error) {
+                    titleEl.textContent = "Error";
+                    infoEl.textContent = data.error;
+                    return;
+                }
+
+                titleEl.textContent = data.title;
+                infoEl.textContent = `${data.release_date ? `Released: ${data.release_date}` : ''}\n\n${data.overview || ''}`;
+                
+                if (data.poster_path) {
+                    posterEl.src = `https://image.tmdb.org/t/p/w500${data.poster_path}`;
+                    posterEl.style.display = 'block';
+                }
+            } catch (err) {
+                titleEl.textContent = "Error";
+                infoEl.textContent = "Failed to fetch movie. Make sure the server is running.";
+                console.error(err);
+            }
+        });
+    </script>
+</body>
+</html>
