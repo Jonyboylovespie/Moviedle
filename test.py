@@ -1,12 +1,12 @@
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
-from pathlib import Path
 
 def _build_opener():
     """Return an urllib opener that stores cookies (for the SID auth cookie)."""
@@ -102,23 +102,47 @@ def run_search(pattern):
     return best.get("fileUrl", None)
 
 
+def _sanitize_dirname(name):
+    invalid = '<>:"/\\|?*'
+    for ch in invalid:
+        name = name.replace(ch, '_')
+    return name.strip('. ')
+
+
+def _get_video_duration(path):
+    """Return the duration of *path* in seconds using ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv(p=0)",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(result.stdout.strip())
+
+
 # ---------------------------------------------------------------------------
 # Download workflow
 # ---------------------------------------------------------------------------
 
-def download(link):
+def download(link, query=None):
     """Start a qBittorrent download for *link* in the current project directory.
 
-    Waits until the download finishes and returns True on success, False otherwise.
+    Waits until the download finishes, deletes the torrent without removing files,
+    and optionally post-processes the largest video found.
+
+    Returns True on full success, False otherwise.
     """
     if not link:
         return False
 
     opener = _build_opener()
-    project_dir = Path(os.path.dirname(os.path.abspath(__file__)))
-    save_path = project_dir / "Movies"
-    if not (save_path).exists():
-        (save_path).mkdir()
+    project_dir = os.path.dirname(os.path.abspath(__file__))
     tag = f"moviedle_{int(time.time() * 1000)}"
 
     # Add the torrent
@@ -128,7 +152,7 @@ def download(link):
             "/api/v2/torrents/add",
             data={
                 "urls": link,
-                "savepath": save_path,
+                "savepath": project_dir,
                 "tags": tag,
             },
         )
@@ -137,8 +161,13 @@ def download(link):
 
     # Poll until completion, error, or timeout
     poll_interval = 2
-    max_wait = 7200  # 1 hour
+    max_wait = 3600  # 1 hour
     elapsed = 0
+    torrent_hash = None
+    content_path = None
+    save_path = None
+    torrent_name = None
+    finished = False
 
     while elapsed < max_wait:
         try:
@@ -159,18 +188,91 @@ def download(link):
 
         torrent = torrents[0]
         progress = torrent.get("progress", 0)
-        print(progress)
         state = torrent.get("state", "")
+        torrent_hash = torrent.get("hash")
+        content_path = torrent.get("content_path")
+        save_path = torrent.get("save_path")
+        torrent_name = torrent.get("name")
 
         if progress == 1.0:
-            return True
+            finished = True
+            break
         if state in ("error", "missingFiles"):
             return False
 
         time.sleep(poll_interval)
         elapsed += poll_interval
 
-    return False
+    if not finished:
+        return False
+
+    # Resolve content path if the API didn't provide it
+    if not content_path and save_path and torrent_name:
+        content_path = os.path.join(save_path, torrent_name)
+
+    # Delete the torrent without deleting files
+    if torrent_hash:
+        try:
+            _api_request(
+                opener,
+                "/api/v2/torrents/delete",
+                data={"hashes": torrent_hash, "deleteFiles": "false"},
+            )
+        except RuntimeError:
+            pass  # continue even if removal fails
+
+    # Post-processing
+    if query and content_path and os.path.exists(content_path):
+        content_path = os.path.normpath(content_path)
+
+        # Gather all .mp4 and .mkv files
+        video_files = []
+        if os.path.isfile(content_path):
+            if content_path.lower().endswith((".mp4", ".mkv")):
+                video_files.append(content_path)
+        else:
+            for root, dirs, files in os.walk(content_path):
+                for file in files:
+                    if file.lower().endswith((".mp4", ".mkv")):
+                        video_files.append(os.path.join(root, file))
+
+        if video_files:
+            largest = max(video_files, key=os.path.getsize)
+            movies_dir = os.path.join(
+                project_dir, "Movies", _sanitize_dirname(query)
+            )
+            os.makedirs(movies_dir, exist_ok=True)
+
+            try:
+                duration = _get_video_duration(largest)
+            except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+                return False
+
+            for seconds in range(1, 7):
+                output_file = os.path.join(movies_dir, f"{seconds}s.mp4")
+                speed = duration / seconds
+                vf = f"setpts=(PTS-STARTPTS)/{speed}"
+
+                try:
+                    subprocess.run(
+                        [
+                            "ffmpeg",
+                            "-y",
+                            "-i", largest,
+                            "-vf", vf,
+                            "-an",
+                            "-r", "24",
+                            "-c:v", "libx264",
+                            "-preset", "fast",
+                            output_file,
+                        ],
+                        check=True,
+                        capture_output=True,
+                    )
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +293,6 @@ if __name__ == "__main__":
 
     if link:
         print(f"Best result: {link}")
-        success = download(link)
-        if success:
-            print("Download completed successfully.")
-        else:
-            print("Download failed.")
+        success = download(link, query)
+        print(f"Download success: {success}")
+        sys.exit(0 if success else 1)
