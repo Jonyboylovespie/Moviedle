@@ -100,6 +100,7 @@ def run_search(pattern):
     print(f"Name:    {best.get('fileName', 'N/A')}")
     print(f"Seeders: {best.get('nbSeeders', 'N/A')}")
     print(f"URL:     {best.get('fileUrl', 'N/A')}")
+    return best.get("fileUrl", None)
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +114,10 @@ if __name__ == "__main__":
 
     query = sys.argv[1]
     try:
-        run_search(query)
+        link = run_search(query)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    if link:
+        print(f"Best result: {link}")
