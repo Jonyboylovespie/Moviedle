@@ -6,6 +6,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
+from pathlib import Path
 
 def _build_opener():
     """Return an urllib opener that stores cookies (for the SID auth cookie)."""
@@ -114,7 +115,10 @@ def download(link):
         return False
 
     opener = _build_opener()
-    project_dir = os.path.dirname(os.path.abspath(__file__))
+    project_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+    save_path = project_dir / "Movies"
+    if not (save_path).exists():
+        (save_path).mkdir()
     tag = f"moviedle_{int(time.time() * 1000)}"
 
     # Add the torrent
@@ -124,7 +128,7 @@ def download(link):
             "/api/v2/torrents/add",
             data={
                 "urls": link,
-                "savepath": project_dir,
+                "savepath": save_path,
                 "tags": tag,
             },
         )
@@ -155,6 +159,7 @@ def download(link):
 
         torrent = torrents[0]
         progress = torrent.get("progress", 0)
+        print(progress)
         state = torrent.get("state", "")
 
         if progress == 1.0:
