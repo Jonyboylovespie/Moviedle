@@ -1,5 +1,7 @@
 import json
+import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -96,11 +98,74 @@ def run_search(pattern):
         return
 
     best = max(all_results, key=lambda r: r.get("nbSeeders", 0))
-
-    print(f"Name:    {best.get('fileName', 'N/A')}")
-    print(f"Seeders: {best.get('nbSeeders', 'N/A')}")
-    print(f"URL:     {best.get('fileUrl', 'N/A')}")
     return best.get("fileUrl", None)
+
+
+# ---------------------------------------------------------------------------
+# Download workflow
+# ---------------------------------------------------------------------------
+
+def download(link):
+    """Start a qBittorrent download for *link* in the current project directory.
+
+    Waits until the download finishes and returns True on success, False otherwise.
+    """
+    if not link:
+        return False
+
+    opener = _build_opener()
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    tag = f"moviedle_{int(time.time() * 1000)}"
+
+    # Add the torrent
+    try:
+        _api_request(
+            opener,
+            "/api/v2/torrents/add",
+            data={
+                "urls": link,
+                "savepath": project_dir,
+                "tags": tag,
+            },
+        )
+    except RuntimeError:
+        return False
+
+    # Poll until completion, error, or timeout
+    poll_interval = 2
+    max_wait = 7200  # 1 hour
+    elapsed = 0
+
+    while elapsed < max_wait:
+        try:
+            body = _api_request(
+                opener,
+                "/api/v2/torrents/info",
+                data={"tag": tag},
+                method="GET",
+            )
+        except RuntimeError:
+            return False
+
+        torrents = json.loads(body)
+        if not torrents:
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+            continue
+
+        torrent = torrents[0]
+        progress = torrent.get("progress", 0)
+        state = torrent.get("state", "")
+
+        if progress == 1.0:
+            return True
+        if state in ("error", "missingFiles"):
+            return False
+
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -121,3 +186,8 @@ if __name__ == "__main__":
 
     if link:
         print(f"Best result: {link}")
+        success = download(link)
+        if success:
+            print("Download completed successfully.")
+        else:
+            print("Download failed.")
