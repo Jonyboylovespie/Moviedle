@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Moviedle Randomizer</title>
+    <title>Moviedle</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -26,11 +26,15 @@
             color: white;
             border: none;
             border-radius: 5px;
-            margin-bottom: 30px;
+            margin: 10px;
             transition: background-color 0.2s;
         }
         button:hover {
             background-color: #f40612;
+        }
+        button:disabled {
+            background-color: #555;
+            cursor: not-allowed;
         }
         #movie-display {
             text-align: center;
@@ -44,6 +48,7 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
+            margin-bottom: 20px;
         }
         #movie-title {
             font-size: 2rem;
@@ -62,50 +67,205 @@
             margin-top: 20px;
             box-shadow: 0 4px 8px rgba(0,0,0,0.5);
         }
+        #progress-container {
+            width: 100%;
+            max-width: 600px;
+            margin: 20px 0;
+            display: none;
+        }
+        #progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #333;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        #progress-fill {
+            width: 0%;
+            height: 100%;
+            background-color: #e50914;
+            transition: width 0.3s ease;
+        }
+        #progress-text {
+            text-align: center;
+            margin-top: 8px;
+            font-size: 1rem;
+            color: #b3b3b3;
+        }
+        #clips-container {
+            display: none;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+            margin-top: 20px;
+            max-width: 1200px;
+            width: 100%;
+        }
+        .clip-card {
+            background-color: #222;
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+            width: 280px;
+        }
+        .clip-card h3 {
+            margin: 0 0 10px 0;
+            font-size: 1.2rem;
+        }
+        .clip-card video {
+            width: 100%;
+            border-radius: 5px;
+        }
     </style>
 </head>
 <body>
-    <button id="random-btn">Get Random Movie</button>
     <div id="movie-display">
-        <div id="movie-title">Press the button to get a random movie!</div>
+        <div id="movie-title">Press "Generate Movie" to get started!</div>
         <div id="movie-info"></div>
         <img id="movie-poster" class="poster" style="display: none;" alt="Movie Poster" />
     </div>
 
+    <div>
+        <button id="generate-btn">Generate Movie</button>
+        <button id="download-btn" disabled>Download & Process</button>
+    </div>
+
+    <div id="progress-container">
+        <div id="progress-bar"><div id="progress-fill"></div></div>
+        <div id="progress-text"></div>
+    </div>
+
+    <div id="clips-container"></div>
+
     <script>
-        const btn = document.getElementById('random-btn');
+        const generateBtn = document.getElementById('generate-btn');
+        const downloadBtn = document.getElementById('download-btn');
         const titleEl = document.getElementById('movie-title');
         const infoEl = document.getElementById('movie-info');
         const posterEl = document.getElementById('movie-poster');
+        const progressContainer = document.getElementById('progress-container');
+        const progressFill = document.getElementById('progress-fill');
+        const progressText = document.getElementById('progress-text');
+        const clipsContainer = document.getElementById('clips-container');
 
-        btn.addEventListener('click', async () => {
-            titleEl.textContent = "Loading...";
-            infoEl.textContent = "";
+        let currentMovieName = '';
+        let pollInterval = null;
+
+        generateBtn.addEventListener('click', async () => {
+            titleEl.textContent = 'Loading...';
+            infoEl.textContent = '';
             posterEl.style.display = 'none';
+            clipsContainer.style.display = 'none';
+            clipsContainer.innerHTML = '';
+            downloadBtn.disabled = true;
+            currentMovieName = '';
 
             try {
-                const response = await fetch('/random-movie');
+                const response = await fetch('/generate-movie');
                 const data = await response.json();
 
                 if (data.error) {
-                    titleEl.textContent = "Error";
+                    titleEl.textContent = 'Error';
                     infoEl.textContent = data.error;
                     return;
                 }
 
-                titleEl.textContent = data.title;
-                infoEl.textContent = `${data.release_date ? `Released: ${data.release_date}` : ''}\n\n${data.overview || ''}`;
-                
+                currentMovieName = data.display_name;
+                titleEl.textContent = data.display_name;
+                infoEl.textContent = `${data.year ? `Year: ${data.year}` : ''}\n\n${data.overview || ''}`;
+
                 if (data.poster_path) {
                     posterEl.src = `https://image.tmdb.org/t/p/w500${data.poster_path}`;
                     posterEl.style.display = 'block';
                 }
+                downloadBtn.disabled = false;
             } catch (err) {
-                titleEl.textContent = "Error";
-                infoEl.textContent = "Failed to fetch movie. Make sure the server is running.";
+                titleEl.textContent = 'Error';
+                infoEl.textContent = 'Failed to fetch movie. Make sure the server is running.';
                 console.error(err);
             }
         });
+
+        downloadBtn.addEventListener('click', async () => {
+            if (!currentMovieName) return;
+
+            generateBtn.disabled = true;
+            downloadBtn.disabled = true;
+            progressContainer.style.display = 'block';
+            clipsContainer.style.display = 'none';
+            clipsContainer.innerHTML = '';
+            progressFill.style.width = '0%';
+            progressText.textContent = 'Starting...';
+
+            try {
+                const response = await fetch('/start-download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ movie_name: currentMovieName })
+                });
+                const data = await response.json();
+
+                if (data.error) {
+                    progressText.textContent = `Error: ${data.error}`;
+                    generateBtn.disabled = false;
+                    downloadBtn.disabled = false;
+                    return;
+                }
+
+                startPolling();
+            } catch (err) {
+                progressText.textContent = 'Failed to start download.';
+                generateBtn.disabled = false;
+                downloadBtn.disabled = false;
+                console.error(err);
+            }
+        });
+
+        function startPolling() {
+            if (pollInterval) clearInterval(pollInterval);
+            pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/download-status');
+                    const data = await response.json();
+
+                    progressFill.style.width = `${data.progress}%`;
+                    progressText.textContent = data.message;
+
+                    if (data.status === 'done') {
+                        clearInterval(pollInterval);
+                        showClips(data.movie_dir, data.clips);
+                        generateBtn.disabled = false;
+                        downloadBtn.disabled = false;
+                    } else if (data.status === 'error') {
+                        clearInterval(pollInterval);
+                        generateBtn.disabled = false;
+                        downloadBtn.disabled = false;
+                    }
+                } catch (err) {
+                    console.error(err);
+                }
+            }, 2000);
+        }
+
+        function showClips(movieDirName, clips) {
+            progressContainer.style.display = 'none';
+            clipsContainer.style.display = 'flex';
+            clipsContainer.innerHTML = '';
+
+            const movieDir = encodeURIComponent(movieDirName);
+            clips.forEach(clip => {
+                const seconds = clip.replace('.mp4', '');
+                const card = document.createElement('div');
+                card.className = 'clip-card';
+                card.innerHTML = `
+                    <h3>${seconds}</h3>
+                    <video controls autoplay loop muted>
+                        <source src="/movies/${movieDir}/${clip}" type="video/mp4">
+                    </video>
+                `;
+                clipsContainer.appendChild(card);
+            });
+        }
     </script>
 </body>
 </html>
