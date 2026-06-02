@@ -324,21 +324,29 @@ def index():
     return render_template('index.html')
 
 
+def _build_tmdb_params(page):
+    return {
+        "api_key": TMDB_API_KEY,
+        "sort_by": "popularity.desc",
+        "page": page,
+        "include_adult": "false",
+        "with_original_language": "en",
+        "vote_average.gte": "5",
+        "vote_average.lte": "10",
+        "vote_count.gte": "500",
+        "with_runtime.gte": "0",
+        "with_runtime.lte": "360",
+    }
+
+
 @app.route('/random-movie')
 def random_movie():
     if not TMDB_API_KEY:
         return jsonify({"error": "TMDB_API_KEY not configured. Set it as an environment variable."}), 500
 
     random_page = random.randint(1, 10)
-
     url = f"{TMDB_BASE_URL}/discover/movie"
-    params = {
-        "api_key": TMDB_API_KEY,
-        "sort_by": "popularity.desc",
-        "page": random_page,
-        "include_adult": "false",
-        "language": "en-US"
-    }
+    params = _build_tmdb_params(random_page)
 
     try:
         response = requests.get(url, params=params, timeout=10)
@@ -367,13 +375,7 @@ def generate_movie():
 
     random_page = random.randint(1, 10)
     url = f"{TMDB_BASE_URL}/discover/movie"
-    params = {
-        "api_key": TMDB_API_KEY,
-        "sort_by": "popularity.desc",
-        "page": random_page,
-        "include_adult": "false",
-        "language": "en-US"
-    }
+    params = _build_tmdb_params(random_page)
 
     try:
         response = requests.get(url, params=params, timeout=10)
