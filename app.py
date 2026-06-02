@@ -270,36 +270,36 @@ def _download_and_process(link, query, state):
             state["message"] = f"ffprobe failed: {exc}"
             return
 
-        clips = []
-        for seconds in range(1, 7):
-            output_file = os.path.join(movies_dir, f"{seconds}s.mp4")
-            speed = duration / seconds
-            vf = f"setpts=(PTS-STARTPTS)/{speed}"
+        # Build single-pass multi-output ffmpeg command
+        chains = []
+        for i, sec in enumerate(range(1, 7), start=1):
+            label = chr(ord('a') + i - 1)
+            speed = duration / sec
+            chains.append(f"[{label}]setpts=PTS/{speed},fps=24[{label}1]")
 
-            try:
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-i", largest,
-                        "-vf", vf,
-                        "-an",
-                        "-r", "24",
-                        "-c:v", "libx264",
-                        "-preset", "fast",
-                        output_file,
-                    ],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                clips.append(f"{seconds}s.mp4")
-            except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-                state["status"] = "error"
-                state["message"] = f"ffmpeg failed for {seconds}s clip: {exc}"
-                return
+        filter_complex = f"[0:v]split=6[a][b][c][d][e][f];" + ";".join(chains)
 
-        state["clips"] = clips
+        cmd = ["ffmpeg", "-y", "-i", largest, "-filter_complex", filter_complex]
+        for i, sec in enumerate(range(1, 7), start=1):
+            label = chr(ord('a') + i - 1)
+            cmd.extend([
+                "-an", "-r", "24", "-c:v", "libx264", "-preset", "ultrafast",
+                "-map", f"[{label}1]", os.path.join(movies_dir, f"{sec}s.mp4")
+            ])
+
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            state["status"] = "error"
+            state["message"] = f"ffmpeg failed: {exc}"
+            return
+
+        state["clips"] = [f"{s}s.mp4" for s in range(1, 7)]
         state["status"] = "done"
         state["message"] = "Complete!"
     else:
