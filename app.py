@@ -344,7 +344,7 @@ def random_movie():
     if not TMDB_API_KEY:
         return jsonify({"error": "TMDB_API_KEY not configured. Set it as an environment variable."}), 500
 
-    random_page = random.randint(1, 10)
+    random_page = random.randint(1, 100)
     url = f"{TMDB_BASE_URL}/discover/movie"
     params = _build_tmdb_params(random_page)
 
