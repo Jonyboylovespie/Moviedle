@@ -4,7 +4,7 @@ import os
 import random
 from dotenv import load_dotenv
 
-load_dotenv()  # Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
 
@@ -20,7 +20,6 @@ def random_movie():
     if not TMDB_API_KEY:
         return jsonify({"error": "TMDB_API_KEY not configured. Set it as an environment variable."}), 500
     
-    # Pick a random page from the first 500 pages of popular movies
     random_page = random.randint(1, 10)
     
     url = f"{TMDB_BASE_URL}/discover/movie"
