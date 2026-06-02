@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
 from dotenv import load_dotenv
+import shutil
 import threading
 
 load_dotenv()
@@ -298,6 +299,13 @@ def _download_and_process(link, query, state):
             state["status"] = "error"
             state["message"] = f"ffmpeg failed: {exc}"
             return
+
+        # Delete the original downloaded files
+        if content_path and os.path.exists(content_path):
+            if os.path.isfile(content_path):
+                os.remove(content_path)
+            else:
+                shutil.rmtree(content_path)
 
         state["clips"] = [f"{s}s.mp4" for s in range(1, 7)]
         state["status"] = "done"
