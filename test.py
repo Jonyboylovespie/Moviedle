@@ -292,7 +292,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if link:
-        print(f"Best result: {link}")
+        print("Downloading movie...")
         success = download(link, query)
         print(f"Download success: {success}")
         sys.exit(0 if success else 1)
