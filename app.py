@@ -24,6 +24,11 @@ TMDB_BASE_URL = "https://api.themoviedb.org/3"
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 METADATA_FILE = os.path.join(PROJECT_DIR, "movies_db.json")
 
+# Disk-space thresholds (bytes)
+MIN_FREE_DOWNLOAD = 5 * 1024 ** 3   # 5 GB before starting a download
+MIN_FREE_ENCODE = 2 * 1024 ** 3     # 2 GB before running ffmpeg
+CRITICAL_FREE = 1 * 1024 ** 3       # 1 GB -> abort active download immediately
+
 # ---------------------------------------------------------------------------
 # Thread-safe download queue / state
 # ---------------------------------------------------------------------------
@@ -112,6 +117,25 @@ def run_search(pattern):
 
     best = max(all_results, key=lambda r: r.get("nbSeeders", 0))
     return best.get("fileUrl", None)
+
+
+def _get_free_space(path):
+    """Return free disk space for the drive containing *path* (bytes)."""
+    return shutil.disk_usage(path).free
+
+
+def _delete_torrent(opener, torrent_hash, delete_files=False):
+    """Remove a torrent from qBittorrent."""
+    if not torrent_hash:
+        return
+    try:
+        _api_request(
+            opener,
+            "/api/v2/torrents/delete",
+            data={"hashes": torrent_hash, "deleteFiles": "true" if delete_files else "false"},
+        )
+    except RuntimeError:
+        pass
 
 
 def _sanitize_dirname(name):
@@ -276,6 +300,11 @@ def _download_and_process_movie(movie_name):
     if not movie_name:
         return False
 
+    # --- Disk check before download ---
+    if _get_free_space(PROJECT_DIR) < MIN_FREE_DOWNLOAD:
+        print(f"Skipping {movie_name}: not enough free space for download.", file=sys.stderr)
+        return False
+
     link = run_search(movie_name)
     if not link:
         return False
@@ -308,6 +337,12 @@ def _download_and_process_movie(movie_name):
     finished = False
 
     while elapsed < max_wait:
+        # Critical disk check during download
+        if _get_free_space(PROJECT_DIR) < CRITICAL_FREE:
+            print(f"Aborting download for {movie_name}: critical disk space.", file=sys.stderr)
+            _delete_torrent(opener, torrent_hash, delete_files=True)
+            return False
+
         try:
             body = _api_request(
                 opener,
@@ -316,6 +351,7 @@ def _download_and_process_movie(movie_name):
                 method="GET",
             )
         except RuntimeError:
+            _delete_torrent(opener, torrent_hash, delete_files=True)
             return False
 
         torrents = json.loads(body)
@@ -336,30 +372,33 @@ def _download_and_process_movie(movie_name):
             finished = True
             break
         if torrent_state in ("error", "missingFiles"):
+            _delete_torrent(opener, torrent_hash, delete_files=True)
             return False
 
         time.sleep(poll_interval)
         elapsed += poll_interval
 
     if not finished:
+        _delete_torrent(opener, torrent_hash, delete_files=True)
         return False
 
     if not content_path and save_path and torrent_name:
         content_path = os.path.join(save_path, torrent_name)
 
-    # Delete torrent without removing files
-    if torrent_hash:
-        try:
-            _api_request(
-                opener,
-                "/api/v2/torrents/delete",
-                data={"hashes": torrent_hash, "deleteFiles": "false"},
-            )
-        except RuntimeError:
-            pass
+    # Delete torrent without removing files (we still need them)
+    _delete_torrent(opener, torrent_hash, delete_files=False)
 
     # Post-processing
     if not content_path or not os.path.exists(content_path):
+        return False
+
+    # --- Disk check before encoding ---
+    if _get_free_space(PROJECT_DIR) < MIN_FREE_ENCODE:
+        print(f"Skipping encode for {movie_name}: not enough free space.", file=sys.stderr)
+        if os.path.isfile(content_path):
+            os.remove(content_path)
+        else:
+            shutil.rmtree(content_path)
         return False
 
     content_path = os.path.normpath(content_path)
@@ -374,6 +413,10 @@ def _download_and_process_movie(movie_name):
                     video_files.append(os.path.join(root, file))
 
     if not video_files:
+        if os.path.isfile(content_path):
+            os.remove(content_path)
+        else:
+            shutil.rmtree(content_path)
         return False
 
     largest = max(video_files, key=os.path.getsize)
@@ -383,6 +426,10 @@ def _download_and_process_movie(movie_name):
     try:
         duration = _get_video_duration(largest)
     except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        if os.path.isfile(content_path):
+            os.remove(content_path)
+        else:
+            shutil.rmtree(content_path)
         return False
 
     # Single-pass multi-output ffmpeg
@@ -410,6 +457,11 @@ def _download_and_process_movie(movie_name):
             stderr=subprocess.DEVNULL,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
+        # Clean up original files on encode failure
+        if os.path.isfile(content_path):
+            os.remove(content_path)
+        else:
+            shutil.rmtree(content_path)
         return False
 
     # Delete original downloaded files
@@ -431,6 +483,12 @@ def _download_worker():
         job = download_queue.get()
         if job is None:
             break
+
+        # Block until there is enough free space for a download.
+        # If space is low, sleep and retry so the queue is preserved.
+        while _get_free_space(PROJECT_DIR) < MIN_FREE_DOWNLOAD:
+            time.sleep(30)
+
         sanitized = _sanitize_dirname(job["display_name"])
         with active_downloads_lock:
             active_downloads.add(sanitized)
@@ -598,6 +656,17 @@ def search_movies():
         return jsonify(movies)
     except requests.RequestException:
         return jsonify([])
+
+
+@app.route('/disk-status')
+def disk_status():
+    total, used, free = shutil.disk_usage(PROJECT_DIR)
+    return jsonify({
+        "total_gb": round(total / (1024 ** 3), 2),
+        "used_gb": round(used / (1024 ** 3), 2),
+        "free_gb": round(free / (1024 ** 3), 2),
+        "low_space": free < MIN_FREE_DOWNLOAD,
+    })
 
 
 @app.route('/movies/<path:subpath>')

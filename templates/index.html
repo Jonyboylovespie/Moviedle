@@ -35,6 +35,15 @@
             font-size: 1rem;
             color: #b3b3b3;
         }
+        #disk-info {
+            font-size: 0.85rem;
+            color: #888;
+            text-align: right;
+        }
+        #disk-info.warning {
+            color: #ff5252;
+            font-weight: bold;
+        }
         #status-dot {
             width: 12px;
             height: 12px;
@@ -206,9 +215,12 @@
 <body>
     <div id="top-bar">
         <h1>Moviedle</h1>
-        <div id="movie-count">
-            <span id="status-dot"></span>
-            <span id="count-text">Movies: 0</span>
+        <div style="text-align:right;">
+            <div id="movie-count">
+                <span id="status-dot"></span>
+                <span id="count-text">Movies: 0</span>
+            </div>
+            <div id="disk-info">Disk: -- GB free</div>
         </div>
     </div>
 
@@ -285,7 +297,7 @@
             btnCount.textContent = downloadSlider.value;
         });
 
-        // --- Poll movie count ---
+        // --- Poll movie count & disk status ---
         async function updateMovieCount() {
             try {
                 const resp = await fetch('/movie-count');
@@ -295,8 +307,21 @@
                 playBtn.disabled = data.downloaded === 0;
             } catch (e) {}
         }
+
+        async function updateDiskStatus() {
+            try {
+                const resp = await fetch('/disk-status');
+                const data = await resp.json();
+                const diskEl = document.getElementById('disk-info');
+                diskEl.textContent = `Disk: ${data.free_gb} GB free`;
+                diskEl.classList.toggle('warning', data.low_space);
+            } catch (e) {}
+        }
+
         setInterval(updateMovieCount, 3000);
+        setInterval(updateDiskStatus, 5000);
         updateMovieCount();
+        updateDiskStatus();
 
         // --- Download ---
         downloadBtn.addEventListener('click', async () => {
