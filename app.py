@@ -562,6 +562,44 @@ def game_reveal():
     return jsonify({"movie_name": movie_name})
 
 
+@app.route('/search-movies')
+def search_movies():
+    if not TMDB_API_KEY:
+        return jsonify({"error": "TMDB_API_KEY not configured."}), 500
+
+    query = request.args.get('q', '')
+    if not query:
+        return jsonify([])
+
+    url = f"{TMDB_BASE_URL}/search/movie"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "query": query,
+        "include_adult": "false",
+        "language": "en-US",
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        results = data.get("results", [])
+
+        movies = []
+        for movie in results[:10]:
+            title = movie.get("title", "")
+            release_date = movie.get("release_date", "")
+            year = release_date[:4] if release_date and len(release_date) >= 4 else ""
+            display_name = f"{title} ({year})" if year else title
+            movies.append({
+                "display_name": display_name,
+                "poster_path": movie.get("poster_path"),
+            })
+        return jsonify(movies)
+    except requests.RequestException:
+        return jsonify([])
+
+
 @app.route('/movies/<path:subpath>')
 def serve_movie(subpath):
     movies_dir = os.path.join(PROJECT_DIR, "Movies")

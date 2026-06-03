@@ -322,41 +322,45 @@
             setTimeout(() => { downloadBtn.disabled = false; }, 1000);
         });
 
-        // --- Load movie list for autofill ---
-        async function loadMovieList() {
-            try {
-                const resp = await fetch('/movies/list');
-                allMovies = await resp.json();
-            } catch (e) {}
-        }
-        loadMovieList();
+        // --- Autofill (searches all TMDB movies) ---
+        let searchTimeout = null;
 
-        // --- Autofill ---
         guessInput.addEventListener('input', () => {
-            const val = guessInput.value.toLowerCase();
+            const val = guessInput.value.trim();
             if (!val || !isGameActive) {
                 autofillDropdown.style.display = 'none';
                 return;
             }
-            const matches = allMovies.filter(m => m.display_name.toLowerCase().includes(val)).slice(0, 8);
-            if (matches.length === 0) {
-                autofillDropdown.style.display = 'none';
-                return;
-            }
-            autofillDropdown.innerHTML = matches.map(m => `
-                <div class="autofill-item" data-name="${m.display_name}">
-                    <img src="${m.poster_path ? `https://image.tmdb.org/t/p/w92${m.poster_path}` : ''}" alt="">
-                    <span>${m.display_name}</span>
-                </div>
-            `).join('');
-            autofillDropdown.style.display = 'block';
 
-            autofillDropdown.querySelectorAll('.autofill-item').forEach(item => {
-                item.addEventListener('click', () => {
-                    guessInput.value = item.dataset.name;
+            if (searchTimeout) clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(async () => {
+                try {
+                    const resp = await fetch('/search-movies?q=' + encodeURIComponent(val));
+                    const movies = await resp.json();
+
+                    if (!movies.length) {
+                        autofillDropdown.style.display = 'none';
+                        return;
+                    }
+
+                    autofillDropdown.innerHTML = movies.map(m => `
+                        <div class="autofill-item" data-name="${m.display_name}">
+                            <img src="${m.poster_path ? `https://image.tmdb.org/t/p/w92${m.poster_path}` : ''}" alt="">
+                            <span>${m.display_name}</span>
+                        </div>
+                    `).join('');
+                    autofillDropdown.style.display = 'block';
+
+                    autofillDropdown.querySelectorAll('.autofill-item').forEach(item => {
+                        item.addEventListener('click', () => {
+                            guessInput.value = item.dataset.name;
+                            autofillDropdown.style.display = 'none';
+                        });
+                    });
+                } catch (e) {
                     autofillDropdown.style.display = 'none';
-                });
-            });
+                }
+            }, 300);
         });
 
         document.addEventListener('click', (e) => {
