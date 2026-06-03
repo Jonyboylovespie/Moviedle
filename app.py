@@ -574,9 +574,13 @@ def game_start():
     movie_dir = random.choice(dirs)
     clips = [f"{s}s.mp4" for s in range(1, 7)]
 
+    meta = _load_metadata()
+    info = meta.get(movie_dir, {})
     return jsonify({
         "movie_dir": movie_dir,
         "clips": clips,
+        "movie_name": info.get("display_name", movie_dir),
+        "poster_path": info.get("poster_path", ""),
     })
 
 
@@ -598,7 +602,7 @@ def game_guess():
 
     if correct:
         _delete_movie(movie_dir)
-        return jsonify({"correct": True, "movie_name": info["display_name"]})
+        return jsonify({"correct": True, "movie_name": info["display_name"], "poster_path": info.get("poster_path", "")})
     return jsonify({"correct": False})
 
 
@@ -616,8 +620,9 @@ def game_reveal():
         return jsonify({"error": "Movie not found"}), 404
 
     movie_name = info["display_name"]
+    poster_path = info.get("poster_path", "")
     _delete_movie(movie_dir)
-    return jsonify({"movie_name": movie_name})
+    return jsonify({"movie_name": movie_name, "poster_path": poster_path})
 
 
 @app.route('/search-movies')

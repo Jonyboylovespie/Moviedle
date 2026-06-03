@@ -288,7 +288,7 @@
         let currentMovieDir = '';
         let currentClips = [];
         let attempt = 0;
-        let allMovies = [];
+        let currentPosterPath = '';
         let isGameActive = false;
 
         // --- Slider ---
@@ -405,6 +405,7 @@
                 const data = await resp.json();
                 currentMovieDir = data.movie_dir;
                 currentClips = data.clips;
+                currentPosterPath = data.poster_path || '';
                 attempt = 0;
                 isGameActive = true;
 
@@ -449,6 +450,7 @@
                 if (data.correct) {
                     feedback.textContent = `Correct! It was ${data.movie_name}`;
                     feedback.className = 'correct';
+                    currentPosterPath = data.poster_path || '';
                     reveal(data.movie_name, true);
                 } else {
                     attempt++;
@@ -465,6 +467,7 @@
                             body: JSON.stringify({ movie_dir: currentMovieDir })
                         });
                         const revealData = await revealResp.json();
+                        currentPosterPath = revealData.poster_path || '';
                         reveal(revealData.movie_name, false);
                     }
                 }
@@ -479,18 +482,16 @@
             guessInput.disabled = true;
             revealArea.style.display = 'flex';
             revealTitle.textContent = wasCorrect ? `Correct! ${movieName}` : `It was ${movieName}`;
-            const meta = allMovies.find(m => m.movie_dir === currentMovieDir);
-            if (meta && meta.poster_path) {
-                revealPoster.src = `https://image.tmdb.org/t/p/w500${meta.poster_path}`;
+            if (currentPosterPath) {
+                revealPoster.src = `https://image.tmdb.org/t/p/w500${currentPosterPath}`;
+                revealPoster.style.display = 'block';
             } else {
-                revealPoster.src = '';
+                revealPoster.style.display = 'none';
             }
         }
 
         // --- Next Movie ---
         nextBtn.addEventListener('click', async () => {
-            // Refresh list since movie was deleted
-            await loadMovieList();
             await updateMovieCount();
 
             // Reset to main view
