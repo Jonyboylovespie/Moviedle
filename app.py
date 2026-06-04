@@ -109,13 +109,17 @@ def run_search(pattern):
     status = "Running"
     while status == "Running":
         results, status = get_results(opener, search_id)
-        all_results = results
+        if results:
+            all_results.extend(results)
+        time.sleep(1)
     stop_and_delete_search(opener, search_id)
 
     if not all_results:
+        print(f"No search results for pattern: {pattern}")
         return None
 
     best = max(all_results, key=lambda r: r.get("nbSeeders", 0))
+    print(f"Best result for {pattern}: {best.get('fileName', 'unknown')} ({best.get('nbSeeders', 0)} seeders)")
     return best.get("fileUrl", None)
 
 
@@ -307,8 +311,10 @@ def _download_and_process_movie(movie_name):
 
     link = run_search(movie_name)
     if not link:
+        print(f"No torrent link found for {movie_name}; aborting download.")
         return False
 
+    print(f"Adding torrent for {movie_name}: {link[:100]}...")
     opener = _build_opener()
     tag = f"moviedle_{int(time.time() * 1000)}"
 
@@ -336,6 +342,7 @@ def _download_and_process_movie(movie_name):
     torrent_name = None
     finished = False
 
+    last_logged_progress = -1.0
     while elapsed < max_wait:
         # Critical disk check during download
         if _get_free_space(PROJECT_DIR) < CRITICAL_FREE:
@@ -368,10 +375,17 @@ def _download_and_process_movie(movie_name):
         save_path = torrent.get("save_path")
         torrent_name = torrent.get("name")
 
+        # Log progress every ~10%
+        if progress - last_logged_progress >= 0.1:
+            print(f"Download progress for {movie_name}: {progress*100:.0f}% (state: {torrent_state})")
+            last_logged_progress = progress
+
         if progress == 1.0:
+            print(f"Download finished for {movie_name}")
             finished = True
             break
         if torrent_state in ("error", "missingFiles"):
+            print(f"Torrent entered bad state for {movie_name}: {torrent_state}")
             _delete_torrent(opener, torrent_hash, delete_files=True)
             return False
 
@@ -449,6 +463,7 @@ def _download_and_process_movie(movie_name):
             "-map", f"[{label}1]", os.path.join(movies_dir, f"{sec}s.mp4")
         ])
 
+    print(f"Starting ffmpeg encoding for {movie_name}...")
     try:
         subprocess.run(
             cmd,
@@ -456,7 +471,9 @@ def _download_and_process_movie(movie_name):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        print(f"Finished ffmpeg encoding for {movie_name}")
     except (subprocess.CalledProcessError, FileNotFoundError):
+        print(f"ffmpeg encoding failed for {movie_name}")
         # Clean up original files on encode failure
         if os.path.isfile(content_path):
             os.remove(content_path)
@@ -484,9 +501,12 @@ def _download_worker():
         if job is None:
             break
 
+        print(f"Worker picked up job: {job['display_name']}")
+
         # Block until there is enough free space for a download.
         # If space is low, sleep and retry so the queue is preserved.
         while _get_free_space(PROJECT_DIR) < MIN_FREE_DOWNLOAD:
+            print("Disk space low; waiting before next download...")
             time.sleep(30)
 
         sanitized = _sanitize_dirname(job["display_name"])
@@ -495,14 +515,19 @@ def _download_worker():
         try:
             success = _download_and_process_movie(job["display_name"])
             if success:
+                print(f"Successfully downloaded and processed: {job['display_name']}")
                 _add_movie_metadata(
                     sanitized,
                     job["title"],
                     job["year"],
                     job.get("poster_path", ""),
                 )
+            else:
+                print(f"Download pipeline returned False for: {job['display_name']}")
         except Exception as exc:
-            print(f"Download failed for {job['display_name']}: {exc}", file=sys.stderr)
+            msg = f"Download failed for {job['display_name']}: {exc}"
+            print(msg, file=sys.stderr)
+            print(msg)
         finally:
             with active_downloads_lock:
                 active_downloads.discard(sanitized)
@@ -535,6 +560,10 @@ def download_movies():
     movies = _pick_movies_not_downloaded(count)
     for movie in movies:
         download_queue.put(movie)
+
+    print(f"Queued {len(movies)} movies for download (requested {count}).")
+    for m in movies:
+        print(f"  - {m['display_name']}")
 
     return jsonify({"queued": len(movies), "requested": count})
 
