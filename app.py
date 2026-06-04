@@ -12,6 +12,7 @@ import urllib.request
 from http.cookiejar import CookieJar
 from dotenv import load_dotenv
 import threading
+import re
 from queue import Queue
 import shutil
 
@@ -40,6 +41,38 @@ active_downloads_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 # qBittorrent helpers
 # ---------------------------------------------------------------------------
+
+def _resolve_search_link(url):
+    """Turn HTML result pages (e.g. LimeTorrents) into a direct torrent/magnet link."""
+    if not url or not url.startswith("http"):
+        return url
+
+    # LimeTorrents gives us a .html page; scrape it for the real download link.
+    if "limetorrents" in url.lower() and url.lower().endswith(".html"):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+
+            # Look for a magnet link first
+            magnet_match = re.search(r'href="(magnet:[^"]+)"', html)
+            if magnet_match:
+                print(f"Resolved LimeTorrents page to magnet: {magnet_match.group(1)[:80]}...")
+                return magnet_match.group(1)
+
+            # Otherwise look for a direct .torrent link
+            torrent_match = re.search(r'href="([^"]+\.torrent[^"]*)"', html)
+            if torrent_match:
+                torrent_url = urllib.parse.urljoin(url, torrent_match.group(1))
+                print(f"Resolved LimeTorrents page to torrent: {torrent_url[:100]}...")
+                return torrent_url
+
+            print(f"Could not find torrent/magnet on LimeTorrents page: {url}")
+        except Exception as exc:
+            print(f"Failed to resolve LimeTorrents page {url}: {exc}")
+
+    return url
+
 
 def _build_opener():
     jar = CookieJar()
@@ -119,8 +152,10 @@ def run_search(pattern):
         return None
 
     best = max(all_results, key=lambda r: r.get("nbSeeders", 0))
+    raw_url = best.get("fileUrl", None)
+    resolved = _resolve_search_link(raw_url)
     print(f"Best result for {pattern}: {best.get('fileName', 'unknown')} ({best.get('nbSeeders', 0)} seeders)")
-    return best.get("fileUrl", None)
+    return resolved
 
 
 def _get_free_space(path):
