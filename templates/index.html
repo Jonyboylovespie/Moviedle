@@ -476,6 +476,13 @@
             }
         });
 
+        guessInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                autofillDropdown.style.display = 'none';
+                guessBtn.click();
+            }
+        });
+
         function reveal(movieName, wasCorrect) {
             isGameActive = false;
             guessBtn.disabled = true;
