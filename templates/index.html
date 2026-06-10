@@ -96,6 +96,11 @@
             cursor: not-allowed;
             transform: none;
         }
+        .button-row {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+        }
         .slider-group {
             margin: 20px 0;
         }
@@ -251,7 +256,10 @@
                 <div id="autofill-dropdown"></div>
             </div>
 
-            <button id="guess-btn">Guess</button>
+            <div class="button-row">
+                <button id="guess-btn">Guess</button>
+                <button id="give-up-btn">Give Up</button>
+            </div>
             <div id="feedback"></div>
 
             <div id="reveal-area">
@@ -276,6 +284,7 @@
         const clipLabel = document.getElementById('clip-label');
         const guessInput = document.getElementById('guess-input');
         const guessBtn = document.getElementById('guess-btn');
+        const giveUpBtn = document.getElementById('give-up-btn');
         const autofillDropdown = document.getElementById('autofill-dropdown');
         const feedback = document.getElementById('feedback');
         const revealArea = document.getElementById('reveal-area');
@@ -417,6 +426,7 @@
                 feedback.className = '';
                 guessInput.value = '';
                 guessBtn.disabled = false;
+                giveUpBtn.disabled = false;
                 guessInput.disabled = false;
 
                 loadClip(0);
@@ -483,9 +493,28 @@
             }
         });
 
+        // --- Give Up ---
+        giveUpBtn.addEventListener('click', async () => {
+            if (!isGameActive) return;
+
+            try {
+                const revealResp = await fetch('/game/reveal', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ movie_dir: currentMovieDir })
+                });
+                const revealData = await revealResp.json();
+                currentPosterPath = revealData.poster_path || '';
+                reveal(revealData.movie_name, false);
+            } catch (err) {
+                feedback.textContent = 'Error revealing movie.';
+            }
+        });
+
         function reveal(movieName, wasCorrect) {
             isGameActive = false;
             guessBtn.disabled = true;
+            giveUpBtn.disabled = true;
             guessInput.disabled = true;
             revealArea.style.display = 'flex';
             revealTitle.textContent = wasCorrect ? `Correct! ${movieName}` : `It was ${movieName}`;
