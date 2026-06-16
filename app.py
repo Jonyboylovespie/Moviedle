@@ -296,12 +296,15 @@ def _pick_movies_not_downloaded(count):
     excluded = downloaded | in_progress
 
     picked = []
-    max_pages = 20
-    for _ in range(max_pages):
+    max_pages = 1000
+    pages = list(range(1, max_pages + 1))
+    random.shuffle(pages)
+
+    for page in pages:
         if len(picked) >= count:
             break
         url = f"{TMDB_BASE_URL}/discover/movie"
-        params = _build_tmdb_params(random.randint(1, 50))
+        params = _build_tmdb_params(page)
         try:
             resp = requests.get(url, params=params, timeout=10)
             resp.raise_for_status()
@@ -309,6 +312,7 @@ def _pick_movies_not_downloaded(count):
             results = data.get("results", [])
             if not results:
                 break
+            random.shuffle(results)
             for movie in results:
                 title = movie.get("title", "")
                 release_date = movie.get("release_date", "")
