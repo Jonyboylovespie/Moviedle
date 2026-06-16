@@ -296,7 +296,7 @@ def _pick_movies_not_downloaded(count):
     excluded = downloaded | in_progress
 
     picked = []
-    max_pages = 500
+    max_pages = 100
     pages = list(range(1, max_pages + 1))
     random.shuffle(pages)
 
