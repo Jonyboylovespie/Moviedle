@@ -589,8 +589,8 @@ def download_movies():
     data = request.get_json() or {}
     count = data.get("count", 1)
 
-    if not isinstance(count, int) or count < 1 or count > 100:
-        return jsonify({"error": "count must be an integer 1-100"}), 400
+    if not isinstance(count, int) or count < 1 or count > 1000:
+        return jsonify({"error": "count must be an integer 1-1000"}), 400
 
     movies = _pick_movies_not_downloaded(count)
     for movie in movies:
