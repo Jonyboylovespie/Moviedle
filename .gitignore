@@ -4,3 +4,4 @@ __pycache__/
 *.pyo
 Movies/
 data/movies.db
+.encoding/

@@ -26,6 +26,10 @@ TMDB_API_KEY = os.getenv('TMDB_API_KEY')
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 METADATA_FILE = os.path.join(PROJECT_DIR, "movies_db.json")
+# Clips are encoded here, then moved into Movies/ only once all six exist, so
+# the game never sees a half-encoded or failed movie folder.
+STAGING_DIR = os.path.join(PROJECT_DIR, ".encoding")
+CLIP_NAMES = [f"{s}s.mp4" for s in range(1, 7)]
 MOVIES_DB_FILE = os.getenv("MOVIES_DB_PATH", os.path.join(PROJECT_DIR, "data", "movies.db"))
 
 # Vote-count bands used when selecting titles from the local CS50 database.
@@ -285,11 +289,34 @@ def _add_movie_metadata(sanitized_name, title, year, poster_path, votes=None, ra
 # Downloaded-movie helpers
 # ---------------------------------------------------------------------------
 
+def _has_all_clips(path):
+    return all(
+        os.path.isfile(os.path.join(path, clip)) and os.path.getsize(os.path.join(path, clip)) > 0
+        for clip in CLIP_NAMES
+    )
+
+
 def _get_downloaded_movies():
     movies_dir = os.path.join(PROJECT_DIR, "Movies")
     if not os.path.exists(movies_dir):
         return set()
-    return {d for d in os.listdir(movies_dir) if os.path.isdir(os.path.join(movies_dir, d))}
+    return {d for d in os.listdir(movies_dir) if _has_all_clips(os.path.join(movies_dir, d))}
+
+
+def _cleanup_incomplete_movies():
+    """Remove leftovers from interrupted or failed encodes.
+
+    Runs once at startup, before any worker starts, so nothing is mid-encode.
+    """
+    shutil.rmtree(STAGING_DIR, ignore_errors=True)
+    movies_dir = os.path.join(PROJECT_DIR, "Movies")
+    if not os.path.isdir(movies_dir):
+        return
+    for name in os.listdir(movies_dir):
+        path = os.path.join(movies_dir, name)
+        if os.path.isdir(path) and not _has_all_clips(path):
+            print(f"Removing incomplete movie folder: {name}", file=sys.stderr)
+            _delete_movie(name)
 
 
 def _get_movie_count():
@@ -392,8 +419,12 @@ def _pick_movies_not_downloaded(count, difficulties=None):
 # Single-movie download + process
 # ---------------------------------------------------------------------------
 
-def _download_and_process_movie(movie_name):
-    """Full pipeline for one movie. Returns True on success."""
+def _download_and_process_movie(movie_name, on_ready=None):
+    """Full pipeline for one movie. Returns True on success.
+
+    ``on_ready`` runs after all clips are encoded and just before the folder is
+    published to Movies/, so metadata exists by the time a game can pick it.
+    """
     if not movie_name:
         return False
 
@@ -527,12 +558,16 @@ def _download_and_process_movie(movie_name):
         return False
 
     largest = max(video_files, key=os.path.getsize)
-    movies_dir = os.path.join(PROJECT_DIR, "Movies", _sanitize_dirname(movie_name))
-    os.makedirs(movies_dir, exist_ok=True)
+    sanitized = _sanitize_dirname(movie_name)
+    final_dir = os.path.join(PROJECT_DIR, "Movies", sanitized)
+    movies_dir = os.path.join(STAGING_DIR, sanitized)
+    shutil.rmtree(movies_dir, ignore_errors=True)
+    os.makedirs(movies_dir)
 
     try:
         duration = _get_video_duration(largest)
     except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        shutil.rmtree(movies_dir, ignore_errors=True)
         if os.path.isfile(content_path):
             os.remove(content_path)
         else:
@@ -567,7 +602,8 @@ def _download_and_process_movie(movie_name):
         print(f"Finished ffmpeg encoding for {movie_name}")
     except (subprocess.CalledProcessError, FileNotFoundError):
         print(f"ffmpeg encoding failed for {movie_name}")
-        # Clean up original files on encode failure
+        # Clean up partial clips and original files on encode failure
+        shutil.rmtree(movies_dir, ignore_errors=True)
         if os.path.isfile(content_path):
             os.remove(content_path)
         else:
@@ -580,6 +616,21 @@ def _download_and_process_movie(movie_name):
             os.remove(content_path)
         else:
             shutil.rmtree(content_path)
+
+    if not _has_all_clips(movies_dir):
+        print(f"ffmpeg produced incomplete clips for {movie_name}", file=sys.stderr)
+        shutil.rmtree(movies_dir, ignore_errors=True)
+        return False
+
+    try:
+        if on_ready:
+            on_ready()
+        os.makedirs(os.path.dirname(final_dir), exist_ok=True)
+        shutil.rmtree(final_dir, ignore_errors=True)
+        os.replace(movies_dir, final_dir)
+    except Exception:
+        shutil.rmtree(movies_dir, ignore_errors=True)
+        raise
 
     return True
 
@@ -606,10 +657,9 @@ def _download_worker():
         with active_downloads_lock:
             active_downloads.add(sanitized)
         try:
-            success = _download_and_process_movie(job["display_name"])
-            if success:
-                print(f"Successfully downloaded and processed: {job['display_name']}")
-                _add_movie_metadata(
+            success = _download_and_process_movie(
+                job["display_name"],
+                on_ready=lambda: _add_movie_metadata(
                     sanitized,
                     job["title"],
                     job["year"],
@@ -617,7 +667,10 @@ def _download_worker():
                     votes=job.get("votes"),
                     rating=job.get("rating"),
                     difficulty=job.get("difficulty"),
-                )
+                ),
+            )
+            if success:
+                print(f"Successfully downloaded and processed: {job['display_name']}")
             else:
                 print(f"Download pipeline returned False for: {job['display_name']}")
         except Exception as exc:
@@ -629,6 +682,8 @@ def _download_worker():
                 active_downloads.discard(sanitized)
             download_queue.task_done()
 
+
+_cleanup_incomplete_movies()
 
 for worker_number in range(1, DOWNLOAD_WORKERS + 1):
     threading.Thread(
@@ -759,12 +814,12 @@ def game_start():
     if not os.path.exists(movies_dir):
         return jsonify({"error": "No movies available"}), 404
 
-    dirs = [d for d in os.listdir(movies_dir) if os.path.isdir(os.path.join(movies_dir, d))]
+    dirs = sorted(_get_downloaded_movies())
     if not dirs:
         return jsonify({"error": "No movies available"}), 404
 
     movie_dir = random.choice(dirs)
-    clips = [f"{s}s.mp4" for s in range(1, 7)]
+    clips = list(CLIP_NAMES)
 
     meta = _load_metadata()
     info = meta.get(movie_dir, {})
