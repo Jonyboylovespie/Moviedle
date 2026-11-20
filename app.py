@@ -13,6 +13,7 @@ from http.cookiejar import CookieJar
 from dotenv import load_dotenv
 import threading
 import re
+import unicodedata
 import uuid
 from queue import Queue
 import shutil
@@ -218,6 +219,8 @@ ENGLISH_TOKENS = {"english", "eng"}
 # Quality multipliers applied to seeders, so a slightly less-seeded 1080p
 # release beats a DVDRip, and camera rips are a last resort.
 QUALITY_WEIGHTS = (
+    # 4K files are several times larger and add nothing to six short clips.
+    ({"2160p", "4k", "uhd"}, 0.5),
     ({"cam", "camrip", "hdcam", "ts", "hdts", "telesync", "tc", "telecine", "hdtc"}, 0.25),
     ({"dvdscr", "scr", "screener"}, 0.5),
     ({"dvdrip", "dvd"}, 0.9),
@@ -262,58 +265,133 @@ def _result_score(result, title):
     return seeders
 
 
-def _pick_best_result(results, title):
-    """Choose the best English release with at least one seeder, or None.
+# Anything smaller is a sample, ebook, or other non-movie file.
+MIN_RELEASE_BYTES = 300 * 1024 ** 2
+LEADING_ARTICLES = {"the", "a", "an"}
 
-    Returns None rather than falling back to a foreign or dead release: skipping
-    one movie is better than burning a download slot on the wrong one.
+
+def _match_tokens(text):
+    """Lowercase, accent-free word tokens for comparing titles to release names."""
+    text = unicodedata.normalize("NFKD", text or "")
+    text = "".join(char for char in text if not unicodedata.combining(char)).lower()
+    text = re.sub(r"['’]", "", text).replace("&", " and ")
+    # Drop a leading "[group]" / "(site)" tag such as "[YTS.MX] Movie 2010".
+    text = re.sub(r"^\s*[\[({][^\])}]*[\])}]\s*", "", text)
+    return [token for token in re.split(r"[\W_]+", text) if token]
+
+
+def _year_offset(file_name, title, year):
+    """How far the release's year is from *year* if the release name starts
+    with the title and is followed by a year; None if it doesn't match.
+
+    Release names are "Title Year ..." ("Beautiful.Boy.2018.1080p"), so this
+    rejects other films that merely contain the title words, like
+    "The Most Beautiful Boy In The World (2021)" or "Beautiful Boy (2010)".
     """
-    candidates = []
+    name = _match_tokens(file_name)
+    wanted = _match_tokens(title)
+    variants = [wanted]
+    if len(wanted) > 1 and wanted[0] in LEADING_ARTICLES:
+        variants.append(wanted[1:])  # "Lord of the Rings ..." for "The Lord of the Rings ..."
+    for title_tokens in variants:
+        if name[:len(title_tokens)] != title_tokens:
+            continue
+        if not year:
+            return 0
+        # Allow a few edition words ("Extended Cut") between title and year.
+        for token in name[len(title_tokens):len(title_tokens) + 4]:
+            if re.fullmatch(r"(19|20)\d\d", token):
+                return abs(int(token) - int(year))
+        return None
+    return None
+
+
+def _pick_best_result(results, title, year=""):
+    """Choose the best English release of this exact film, or None.
+
+    Only results named "<title> <year>" are considered; an exact year is
+    preferred and an off-by-one year (festival vs. release date) is accepted
+    only when no exact match exists. Returns None rather than falling back to
+    a foreign, dead or wrong release: skipping one movie is better than burning
+    a download slot on the wrong one.
+    """
+    by_offset = {0: [], 1: []}
+    mismatched = 0
     for result in results:
         name = result.get("fileName", "")
+        offset = _year_offset(name, title, year)
+        if offset not in by_offset:
+            mismatched += 1
+            continue
+        size = result.get("fileSize", -1)
         reason = _non_english_reason(name, title)
+        if not reason and (result.get("nbSeeders", 0) or 0) < 1:
+            reason = "no seeders"
+        if not reason and isinstance(size, (int, float)) and 0 <= size < MIN_RELEASE_BYTES:
+            reason = "too small to be the film"
         if reason:
-            print(f"Skipping result for {title}: {name} ({reason})", file=sys.stderr, flush=True)
-        elif (result.get("nbSeeders", 0) or 0) < 1:
-            print(f"Skipping result for {title}: {name} (no seeders)", file=sys.stderr, flush=True)
-        else:
-            candidates.append(result)
+            print(f"Skipping result for {title} ({year}): {name} ({reason})", file=sys.stderr, flush=True)
+            continue
+        by_offset[offset].append(result)
+    if mismatched:
+        print(f"Ignored {mismatched} results not named \"{title} {year}\"", file=sys.stderr, flush=True)
+    candidates = by_offset[0] or by_offset[1]
     if not candidates:
         return None
     return max(candidates, key=lambda r: _result_score(r, title))
 
 
-def run_search(pattern):
-    opener = _build_opener()
-    search_id = start_search(opener, pattern)
+def _split_display_name(display_name):
+    match = re.fullmatch(r"(.*) \((\d{4})\)", display_name or "")
+    return (match.group(1), match.group(2)) if match else (display_name or "", "")
+
+
+def _search_queries(title):
+    """Search for the bare title: indexers match names like "Title.2018.1080p"
+    poorly when the query contains "(2018)". Punctuation is dropped since
+    release names rarely keep it; the raw title is a fallback."""
+    simplified = unicodedata.normalize("NFKD", title)
+    simplified = "".join(char for char in simplified if not unicodedata.combining(char))
+    simplified = re.sub(r"['’]", "", simplified)
+    simplified = " ".join(re.sub(r"[^\w\s]", " ", simplified).split())
+    return list(dict.fromkeys(q for q in (simplified, title) if q))
+
+
+def _search_all(opener, query):
+    search_id = start_search(opener, query)
     all_results = []
     status = "Running"
-    while status == "Running":
-        # Results are returned from offset 0 each time, so keep the latest
-        # full list rather than appending duplicates.
-        results, status = get_results(opener, search_id)
-        if results:
-            all_results = results
-        time.sleep(1)
-    stop_and_delete_search(opener, search_id)
+    try:
+        while status == "Running":
+            # Results are returned from offset 0 each time, so keep the latest
+            # full list rather than appending duplicates.
+            results, status = get_results(opener, search_id)
+            if results:
+                all_results = results
+            time.sleep(1)
+    finally:
+        stop_and_delete_search(opener, search_id)
+    return all_results
 
-    if not all_results:
-        print(f"No search results for pattern: {pattern}", file=sys.stderr, flush=True)
-        return None
 
-    best = _pick_best_result(all_results, pattern)
-    if best is None:
-        print(
-            f"No usable English release with seeders among {len(all_results)} results for {pattern}",
-            file=sys.stderr,
-            flush=True,
-        )
-        return None
-
-    raw_url = best.get("fileUrl", None)
-    resolved = _resolve_search_link(raw_url)
-    print(f"Best result for {pattern}: {best.get('fileName', 'unknown')} ({best.get('nbSeeders', 0)} seeders)", flush=True)
-    return resolved
+def run_search(display_name):
+    """Find a torrent link for "Title (Year)", or None if no suitable release."""
+    title, year = _split_display_name(display_name)
+    opener = _build_opener()
+    for query in _search_queries(title):
+        results = _search_all(opener, query)
+        print(f"Search \"{query}\" returned {len(results)} results", file=sys.stderr, flush=True)
+        best = _pick_best_result(results, title, year)
+        if best is not None:
+            raw_url = best.get("fileUrl", None)
+            print(
+                f"Best result for {display_name}: {best.get('fileName', 'unknown')} "
+                f"({best.get('nbSeeders', 0)} seeders)",
+                flush=True,
+            )
+            return _resolve_search_link(raw_url)
+    print(f"No usable English release with seeders found for {display_name}", file=sys.stderr, flush=True)
+    return None
 
 
 def _get_free_space(path):
