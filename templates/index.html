@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Moviedle · Warm Projection Booth</title>
+<title>Moviedle</title>
+<link id="favicon" rel="icon" type="image/png" href="{{ url_for('static', filename='moviedle-reel.png') }}">
 <style>
 :root{
   --walnut-0:#1c110b; --walnut-1:#2a1a12; --walnut-2:#3a2418; --walnut-3:#4b3020;
@@ -341,6 +342,31 @@ const nextBtn = $('next-btn');
 const statusDot = $('status-dot');
 const countText = $('count-text');
 const diskInfo = $('disk-info');
+
+const favicon = $('favicon');
+const faviconImage = new Image();
+faviconImage.src = favicon.href;
+faviconImage.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const context = canvas.getContext('2d');
+    let rotation = 0;
+
+    const drawFavicon = () => {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.save();
+        context.translate(32, 32);
+        context.rotate(rotation * Math.PI / 180);
+        context.drawImage(faviconImage, -30, -30, 60, 60);
+        context.restore();
+        favicon.href = canvas.toDataURL('image/png');
+        rotation = (rotation + 6) % 360;
+    };
+
+    drawFavicon();
+    setInterval(drawFavicon, 180);
+};
 
 let currentMovieDir = '';
 let currentClips = [];
