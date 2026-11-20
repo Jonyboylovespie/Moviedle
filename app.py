@@ -537,6 +537,22 @@ def _get_movie_count():
     return len(_get_downloaded_movies())
 
 
+def _movie_difficulty(info):
+    return info.get("difficulty") or _difficulty_for_votes(info.get("votes"))
+
+
+def _downloaded_by_difficulty(meta=None):
+    """Group playable movie folders by difficulty band."""
+    if meta is None:
+        meta = _load_metadata()
+    groups = {name: [] for name in DIFFICULTY_BANDS}
+    for movie_dir in _get_downloaded_movies():
+        difficulty = _movie_difficulty(meta.get(movie_dir, {}))
+        if difficulty in groups:
+            groups[difficulty].append(movie_dir)
+    return groups
+
+
 def _delete_movie(sanitized_name):
     movie_path = os.path.join(PROJECT_DIR, "Movies", sanitized_name)
     if os.path.exists(movie_path):
@@ -1053,8 +1069,10 @@ def movie_count():
     downloaded = _get_movie_count()
     with active_downloads_lock:
         downloading = len(active_downloads)
+    by_difficulty = {name: len(dirs) for name, dirs in _downloaded_by_difficulty().items()}
     return jsonify({
         "downloaded": downloaded,
+        "downloaded_by_difficulty": by_difficulty,
         "downloading": downloading,
         "queued": download_queue.qsize(),
         "workers": DOWNLOAD_WORKERS,
@@ -1080,24 +1098,27 @@ def movies_list():
 
 @app.route('/game/start')
 def game_start():
-    movies_dir = os.path.join(PROJECT_DIR, "Movies")
-    if not os.path.exists(movies_dir):
-        return jsonify({"error": "No movies available"}), 404
-
-    dirs = sorted(_get_downloaded_movies())
-    if not dirs:
-        return jsonify({"error": "No movies available"}), 404
-
-    movie_dir = random.choice(dirs)
-    clips = list(CLIP_NAMES)
+    difficulty = (request.args.get("difficulty") or "").strip().lower()
+    if difficulty and difficulty not in DIFFICULTY_BANDS:
+        return jsonify({"error": f"Unknown difficulty: {difficulty}"}), 400
 
     meta = _load_metadata()
+    if difficulty:
+        dirs = sorted(_downloaded_by_difficulty(meta)[difficulty])
+        if not dirs:
+            return jsonify({"error": f"No {difficulty} movies available"}), 404
+    else:
+        dirs = sorted(_get_downloaded_movies())
+        if not dirs:
+            return jsonify({"error": "No movies available"}), 404
+
+    movie_dir = random.choice(dirs)
     info = meta.get(movie_dir, {})
     return jsonify({
         "movie_dir": movie_dir,
-        "clips": clips,
+        "clips": list(CLIP_NAMES),
         "movie_name": info.get("display_name", movie_dir),
-        "difficulty": info.get("difficulty") or _difficulty_for_votes(info.get("votes")),
+        "difficulty": _movie_difficulty(info),
     })
 
 

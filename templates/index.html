@@ -112,7 +112,13 @@ legend{font-weight:600;margin-bottom:6px}
 .btn.wide{width:100%}
 #download-feedback{min-height:1.4em;margin:10px 0 0;font-size:.88rem;color:var(--tungsten);text-align:center}
 #download-feedback.err{color:var(--ruby)}
-.ticket{font-size:.85rem;color:var(--muted);text-align:center;margin:10px 0 0}
+.play-buttons{display:grid;gap:12px}
+.btn.play{justify-content:space-between;padding:12px 20px}
+.btn.play small{font-family:var(--round);font-weight:700;font-size:.8rem;opacity:.75}
+.btn.play.easy{background:linear-gradient(180deg,#c8f0b4,#7cc865);box-shadow:0 4px 0 #3f7a2e,0 8px 18px rgba(124,200,101,.25)}
+.btn.play.easy:not(:disabled):active{box-shadow:0 1px 0 #3f7a2e}
+.btn.play.hard{background:linear-gradient(180deg,#ffb59e,#f0664a);box-shadow:0 4px 0 #8f2f1c,0 8px 18px rgba(240,102,74,.25)}
+.btn.play.hard:not(:disabled):active{box-shadow:0 1px 0 #8f2f1c}
 
 /* ---------- Booth / screen ---------- */
 .booth{position:relative;padding:26px 26px 22px 26px;border-radius:28px;
@@ -267,8 +273,11 @@ legend{font-weight:600;margin-bottom:6px}
     </section>
     <section id="play-panel" class="panel" aria-labelledby="pl-h">
       <h2 id="pl-h">Showtime</h2>
-      <button id="play-btn" class="btn wide" disabled>&#9654; Play Game</button>
-      <p class="ticket">Six clips. Each wrong guess runs a longer reel.</p>
+      <div class="play-buttons">
+        <button class="btn wide play easy" data-difficulty="easy" disabled><span>&#9654; Play Easy</span><small data-count>0</small></button>
+        <button class="btn wide play medium" data-difficulty="medium" disabled><span>&#9654; Play Medium</span><small data-count>0</small></button>
+        <button class="btn wide play hard" data-difficulty="hard" disabled><span>&#9654; Play Hard</span><small data-count>0</small></button>
+      </div>
     </section>
   </aside>
 
@@ -280,7 +289,7 @@ legend{font-weight:600;margin-bottom:6px}
     </div>
     <div class="screen-wrap">
       <div class="screen">
-        <div class="intermission" id="intermission"><div><h3>INTERMISSION</h3><p id="inter-sub">Thread a reel, then press Play Game.</p></div></div>
+        <div class="intermission" id="intermission"><div><h3>INTERMISSION</h3><p id="inter-sub">Thread a reel, then pick a difficulty.</p></div></div>
         <div id="game-container" hidden>
           <video id="game-video" controls autoplay loop muted playsinline aria-label="Movie clip"></video>
           <div class="runbar" id="runbar"></div>
@@ -330,7 +339,8 @@ const downloadBtn = $('download-btn');
 const downloadFeedback = $('download-feedback');
 const difficultyInputs = [...document.querySelectorAll('input[name="difficulty"]')];
 const difficultyHint = $('difficulty-hint');
-const playBtn = $('play-btn');
+const playButtons = [...document.querySelectorAll('.btn.play')];
+let currentDifficulty = '';
 const gameContainer = $('game-container');
 const gameUi = $('game-ui');
 const intermission = $('intermission');
@@ -408,10 +418,15 @@ async function updateMovieCount() {
         const response = await fetch('/movie-count');
         const data = await response.json();
         countText.textContent = `Movies: ${data.downloaded}`;
-        playBtn.disabled = data.downloaded === 0;
+        const byDifficulty = data.downloaded_by_difficulty || {};
+        playButtons.forEach((button) => {
+            const count = byDifficulty[button.dataset.difficulty] ?? 0;
+            button.disabled = count === 0;
+            button.querySelector('[data-count]').textContent = `${count} reel${count === 1 ? '' : 's'}`;
+        });
         statusDot.classList.toggle('on', data.downloading > 0);
         $('inter-sub').textContent = data.downloaded
-            ? 'Thread a reel, then press Play Game.'
+            ? 'Thread a reel, then pick a difficulty.'
             : 'The cabinet is empty. Queue some reels first.';
     } catch (error) {
         console.warn('Unable to update movie count', error);
@@ -602,18 +617,25 @@ function startGame(data) {
     guessInput.focus();
 }
 
-playBtn.addEventListener('click', async () => {
+async function playDifficulty(difficulty) {
     try {
-        const response = await fetch('/game/start');
+        const response = await fetch(`/game/start?difficulty=${encodeURIComponent(difficulty)}`);
         const data = await response.json();
         if (!response.ok) {
             feedback.textContent = data.error || 'No movies available.';
-            return;
+            return false;
         }
+        currentDifficulty = difficulty;
         startGame(data);
+        return true;
     } catch (error) {
         feedback.textContent = 'Failed to start game.';
+        return false;
     }
+}
+
+playButtons.forEach((button) => {
+    button.addEventListener('click', () => playDifficulty(button.dataset.difficulty));
 });
 
 function showReveal(won) {
@@ -779,15 +801,12 @@ nextBtn.addEventListener('click', async () => {
     gameUi.hidden = true;
     intermission.hidden = false;
     await updateMovieCount();
-    try {
-        const response = await fetch('/movie-count');
-        const data = await response.json();
-        if (data.downloaded > 0) {
-            const startResponse = await fetch('/game/start');
-            if (startResponse.ok) startGame(await startResponse.json());
-        }
-    } catch (error) {
-        console.warn('Unable to start next movie', error);
+    // Keep playing the same difficulty; stay at intermission when it runs dry.
+    const button = playButtons.find((b) => b.dataset.difficulty === currentDifficulty);
+    if (button && !button.disabled) {
+        await playDifficulty(currentDifficulty);
+    } else if (currentDifficulty) {
+        $('inter-sub').textContent = `No ${currentDifficulty} reels left. Pick another difficulty.`;
     }
 });
 </script>
