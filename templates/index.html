@@ -1,549 +1,660 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Moviedle</title>
-    <style>
-        * { box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            background-color: #141414;
-            color: #ffffff;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-        #top-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px 30px;
-            background-color: #1a1a1a;
-            border-bottom: 1px solid #333;
-        }
-        #top-bar h1 {
-            margin: 0;
-            font-size: 1.5rem;
-            color: #e50914;
-        }
-        #movie-count {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 1rem;
-            color: #b3b3b3;
-        }
-        #disk-info {
-            font-size: 0.85rem;
-            color: #888;
-            text-align: right;
-        }
-        #disk-info.warning {
-            color: #ff5252;
-            font-weight: bold;
-        }
-        #status-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background-color: #4caf50;
-            transition: background-color 0.3s;
-        }
-        #status-dot.downloading {
-            background-color: #ff9800;
-            animation: pulse 1.5s infinite;
-        }
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.4; }
-            100% { opacity: 1; }
-        }
-        #main-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 40px 20px;
-            gap: 30px;
-        }
-        .panel {
-            background-color: #222;
-            border-radius: 12px;
-            padding: 30px;
-            max-width: 500px;
-            width: 100%;
-            text-align: center;
-        }
-        button {
-            padding: 15px 40px;
-            font-size: 1.2rem;
-            cursor: pointer;
-            background-color: #e50914;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            transition: background-color 0.2s, transform 0.1s;
-        }
-        button:hover {
-            background-color: #f40612;
-            transform: translateY(-2px);
-        }
-        button:disabled {
-            background-color: #555;
-            cursor: not-allowed;
-            transform: none;
-        }
-        .button-row {
-            display: flex;
-            gap: 15px;
-            justify-content: center;
-        }
-        .slider-group {
-            margin: 20px 0;
-        }
-        .slider-group label {
-            display: block;
-            margin-bottom: 10px;
-            font-size: 1.1rem;
-            color: #b3b3b3;
-        }
-        input[type="range"] {
-            width: 100%;
-            margin: 10px 0;
-        }
-        .slider-value {
-            font-size: 2rem;
-            font-weight: bold;
-            color: #e50914;
-        }
-        #game-container {
-            display: none;
-            flex-direction: column;
-            align-items: center;
-            gap: 20px;
-            max-width: 700px;
-            width: 100%;
-        }
-        #game-video {
-            width: 100%;
-            max-width: 640px;
-            border-radius: 10px;
-            background-color: #000;
-        }
-        #search-container {
-            position: relative;
-            width: 100%;
-            max-width: 500px;
-        }
-        #guess-input {
-            width: 100%;
-            padding: 12px 15px;
-            font-size: 1.1rem;
-            border: 2px solid #444;
-            border-radius: 6px;
-            background-color: #333;
-            color: #fff;
-        }
-        #guess-input:focus {
-            outline: none;
-            border-color: #e50914;
-        }
-        #autofill-dropdown {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            right: 0;
-            max-height: 300px;
-            overflow-y: auto;
-            background-color: #222;
-            border: 1px solid #444;
-            border-top: none;
-            border-radius: 0 0 6px 6px;
-            z-index: 100;
-            display: none;
-        }
-        .autofill-item {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 10px 15px;
-            cursor: pointer;
-            transition: background-color 0.15s;
-        }
-        .autofill-item:hover {
-            background-color: #333;
-        }
-        .autofill-item img {
-            width: 40px;
-            height: 60px;
-            object-fit: cover;
-            border-radius: 4px;
-            background-color: #444;
-        }
-        .autofill-item span {
-            font-size: 1rem;
-            color: #fff;
-        }
-        #feedback {
-            font-size: 1.2rem;
-            min-height: 1.5em;
-        }
-        #feedback.wrong { color: #ff5252; }
-        #feedback.correct { color: #4caf50; }
-        #reveal-area {
-            display: none;
-            text-align: center;
-            flex-direction: column;
-            align-items: center;
-            gap: 15px;
-        }
-        #reveal-area h2 {
-            margin: 0;
-            font-size: 1.8rem;
-        }
-        #reveal-area img {
-            width: 200px;
-            border-radius: 10px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-        }
-        #clip-label {
-            font-size: 0.9rem;
-            color: #888;
-            margin-top: 5px;
-        }
-        .hidden { display: none !important; }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moviedle · Warm Projection Booth</title>
+<style>
+:root{
+  --walnut-0:#1c110b; --walnut-1:#2a1a12; --walnut-2:#3a2418; --walnut-3:#4b3020;
+  --brass:#d1a954; --brass-hi:#f0d18a; --brass-lo:#8a6a2c;
+  --amber:#ffb24a; --tungsten:#ffe2a8; --cream:#f6e7cc; --muted:#cdb592;
+  --ruby:#e0705a; --sage:#a9c98a;
+  --round:ui-rounded,"SF Pro Rounded","Nunito","Varela Round","Quicksand","Seravek","Gill Sans Nova","Gill Sans","Candara","Segoe UI",system-ui,sans-serif;
+  --human:"Seravek","Gill Sans Nova","Gill Sans","Optima","Candara","Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{
+  font-family:var(--human);color:var(--cream);line-height:1.45;
+  background:
+    radial-gradient(ellipse 120% 80% at 70% 25%,rgba(255,178,74,.13),transparent 60%),
+    repeating-linear-gradient(92deg,rgba(0,0,0,.08) 0 3px,transparent 3px 11px),
+    linear-gradient(180deg,var(--walnut-2),var(--walnut-0));
+  min-height:100%;
+}
+body::after{ /* soft vignette */
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:50;
+  background:radial-gradient(ellipse at center,transparent 55%,rgba(10,5,2,.65) 100%);
+}
+:focus-visible{outline:3px solid var(--tungsten);outline-offset:3px;border-radius:8px}
+button{font:inherit;cursor:pointer}
+button:disabled{cursor:not-allowed;opacity:.45;filter:saturate(.3)}
+
+/* ---------- Brass nameplate top bar ---------- */
+#top-bar{
+  display:flex;align-items:center;gap:1.25rem;flex-wrap:wrap;
+  margin:18px auto 0;max-width:1180px;padding:12px 22px;border-radius:999px;
+  background:linear-gradient(180deg,var(--brass-hi),var(--brass) 45%,var(--brass-lo));
+  color:#2b1a0c;box-shadow:0 2px 0 rgba(255,240,200,.5) inset,0 8px 24px rgba(0,0,0,.5);
+}
+.logo{display:flex;align-items:center;gap:.6rem;margin-right:auto}
+.logo h1{margin:0;font-family:var(--round);font-size:1.7rem;letter-spacing:.02em;font-weight:800;text-shadow:0 1px 0 rgba(255,240,200,.6)}
+.reel{ /* film reel from radial gradients */
+  --s:34px;width:var(--s);height:var(--s);border-radius:50%;flex:none;
+  background:
+    radial-gradient(circle at 50% 50%,#2b1a0c 0 9%,transparent 10%),
+    radial-gradient(circle at 50% 22%,#2b1a0c 0 11%,transparent 12%),
+    radial-gradient(circle at 76% 64%,#2b1a0c 0 11%,transparent 12%),
+    radial-gradient(circle at 24% 64%,#2b1a0c 0 11%,transparent 12%),
+    radial-gradient(circle,var(--brass-hi) 0 62%,#2b1a0c 63% 70%,var(--brass-lo) 71%);
+  box-shadow:0 0 0 2px #2b1a0c;
+}
+.spin{animation:spin 4s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.plate{display:flex;align-items:center;gap:.5rem;font-family:var(--round);font-weight:700;
+  background:rgba(43,26,12,.88);color:var(--tungsten);padding:5px 14px;border-radius:999px;font-size:.95rem}
+#status-dot{width:11px;height:11px;border-radius:50%;background:#7a5a30;box-shadow:inset 0 0 2px #000}
+#status-dot.on{background:var(--amber);animation:bulb 1s ease-in-out infinite}
+@keyframes bulb{50%{box-shadow:0 0 14px 4px var(--amber);background:var(--tungsten)}}
+#disk-info{color:var(--muted)}
+#disk-info.warning{color:var(--ruby);font-weight:800}
+
+/* ---------- Layout ---------- */
+#main-container{max-width:1180px;margin:22px auto 120px;padding:0 18px;
+  display:grid;grid-template-columns:330px 1fr;gap:22px;align-items:start}
+@media(max-width:900px){ #main-container{grid-template-columns:1fr}}
+.cabinet{display:flex;flex-direction:column;gap:18px}
+.panel{
+  position:relative;padding:20px 20px 18px;border-radius:22px;
+  background:
+    repeating-linear-gradient(88deg,rgba(255,220,170,.035) 0 2px,transparent 2px 9px),
+    linear-gradient(160deg,var(--walnut-3),var(--walnut-2) 60%,#2f1d13);
+  box-shadow:0 0 0 1px rgba(209,169,84,.35),0 14px 30px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,230,190,.12);
+}
+.panel::before,.panel::after{ /* brass screws */
+  content:"";position:absolute;top:12px;width:9px;height:9px;border-radius:50%;
+  background:radial-gradient(circle at 35% 35%,var(--brass-hi),var(--brass-lo));
+}
+.panel::before{left:12px}.panel::after{right:12px}
+.panel h2{margin:0 0 12px;text-align:center;font-family:var(--round);font-size:1.05rem;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--brass-hi)}
+.lbl{display:flex;justify-content:space-between;align-items:baseline;font-weight:600}
+#slider-val{font-family:var(--round);font-size:1.6rem;color:var(--tungsten);font-weight:800;
+  text-shadow:0 0 12px rgba(255,178,74,.6)}
+input[type=range]{width:100%;margin:8px 0 14px;appearance:none;-webkit-appearance:none;height:10px;border-radius:99px;
+  background:linear-gradient(90deg,var(--amber) var(--p,0%),#1b100a var(--p,0%));box-shadow:inset 0 1px 3px #000}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;
+  background:radial-gradient(circle at 35% 30%,var(--brass-hi),var(--brass-lo));border:2px solid #2b1a0c}
+input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
+  background:radial-gradient(circle at 35% 30%,var(--brass-hi),var(--brass-lo));border:2px solid #2b1a0c}
+fieldset{border:0;padding:0;margin:0 0 10px}
+legend{font-weight:600;margin-bottom:6px}
+.diff{display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:6px;border-radius:12px;
+  background:rgba(0,0,0,.22);cursor:pointer;transition:background .2s}
+.diff:hover{background:rgba(255,178,74,.1)}
+.diff input{position:absolute;opacity:0;width:1px;height:1px}
+.knob{width:38px;height:22px;border-radius:99px;background:#1b100a;position:relative;flex:none;box-shadow:inset 0 1px 3px #000}
+.knob::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#6e5434;transition:.2s}
+.diff input:checked+.knob{background:rgba(255,178,74,.35)}
+.diff input:checked+.knob::after{left:19px;background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.diff input:focus-visible+.knob{outline:3px solid var(--tungsten);outline-offset:2px}
+.diff b{font-family:var(--round)}
+.diff small{margin-left:auto;color:var(--muted);font-size:.8rem;text-align:right}
+#difficulty-hint{color:var(--muted);font-size:.88rem;margin:4px 0 12px;font-style:italic}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;border:0;border-radius:999px;
+  padding:11px 20px;font-family:var(--round);font-weight:800;letter-spacing:.03em;color:#2b1a0c;
+  background:linear-gradient(180deg,var(--tungsten),var(--amber));box-shadow:0 4px 0 #8a5a1c,0 8px 18px rgba(255,150,40,.25);
+  transition:transform .1s,box-shadow .1s}
+.btn:not(:disabled):active{transform:translateY(3px);box-shadow:0 1px 0 #8a5a1c}
+.btn.ghost{background:transparent;color:var(--brass-hi);box-shadow:inset 0 0 0 2px var(--brass-lo)}
+.btn.wide{width:100%}
+#download-feedback{min-height:1.4em;margin:10px 0 0;font-size:.88rem;color:var(--tungsten);text-align:center}
+#download-feedback.err{color:var(--ruby)}
+.ticket{font-size:.85rem;color:var(--muted);text-align:center;margin:10px 0 0}
+
+/* ---------- Booth / screen ---------- */
+.booth{position:relative;padding:26px 26px 22px 26px;border-radius:28px;overflow:hidden;
+  background:radial-gradient(ellipse at 10% 0%,#3a2416,#1a0f09 70%);box-shadow:0 0 0 1px rgba(209,169,84,.3),0 18px 40px rgba(0,0,0,.55)}
+.projector{position:absolute;left:-6px;top:-6px;width:92px;height:70px;border-radius:0 0 30px 0;z-index:3;
+  background:linear-gradient(160deg,var(--walnut-3),#1a0f09);box-shadow:0 0 0 1px var(--brass-lo)}
+.projector .reel{position:absolute;--s:40px;top:-10px;left:14px}
+.projector i{position:absolute;right:6px;bottom:8px;width:16px;height:16px;border-radius:50%;
+  background:radial-gradient(circle,#fff6dc,var(--amber) 50%,#6b3b0c);box-shadow:0 0 18px 6px rgba(255,190,90,.55)}
+.beam{position:absolute;left:70px;top:46px;width:130%;height:130%;z-index:1;pointer-events:none;
+  transform-origin:0 0;
+  background:conic-gradient(from 96deg at 0 0,transparent 0deg,rgba(255,214,140,.16) 6deg,rgba(255,226,168,.22) 22deg,rgba(255,214,140,.12) 40deg,transparent 46deg);
+  filter:blur(2px);mix-blend-mode:screen}
+.motes{position:absolute;inset:0;z-index:2;pointer-events:none;
+  background-image:
+   radial-gradient(1.5px 1.5px at 20% 30%,rgba(255,240,200,.8),transparent),
+   radial-gradient(1px 1px at 40% 55%,rgba(255,240,200,.7),transparent),
+   radial-gradient(2px 2px at 65% 40%,rgba(255,240,200,.6),transparent),
+   radial-gradient(1px 1px at 30% 70%,rgba(255,240,200,.7),transparent),
+   radial-gradient(1.5px 1.5px at 80% 65%,rgba(255,240,200,.5),transparent),
+   radial-gradient(1px 1px at 55% 25%,rgba(255,240,200,.8),transparent);
+  background-size:300px 260px;animation:drift 24s linear infinite;opacity:.8}
+@keyframes drift{to{background-position:120px -260px}}
+.screen-wrap{position:relative;z-index:2;margin-left:56px}
+.screen{position:relative;aspect-ratio:16/9;border-radius:14px;overflow:hidden;
+  background:#120a05;box-shadow:0 0 0 6px #120a05,0 0 0 8px var(--brass-lo),0 0 60px rgba(255,190,90,.18)}
+.screen::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse at center,transparent 50%,rgba(0,0,0,.55)),
+    repeating-linear-gradient(0deg,rgba(255,255,255,.025) 0 1px,transparent 1px 3px)}
+.intermission{position:absolute;inset:0;display:grid;place-items:center;text-align:center;
+  background:radial-gradient(circle at 50% 45%,#5a3416,#21130a 70%)}
+.intermission h3{margin:0;font-family:var(--round);font-size:clamp(1.6rem,4vw,2.6rem);color:var(--tungsten);
+  letter-spacing:.2em;text-shadow:0 0 22px rgba(255,178,74,.7)}
+.intermission p{margin:.4rem 0 0;color:var(--muted)}
+/* abstract CSS clip */
+#game-video{position:absolute;inset:-8%;--h:30;
+  background:
+   radial-gradient(circle at var(--x1,30%) 40%,hsla(calc(var(--h)*1deg),85%,62%,.9),transparent 34%),
+   radial-gradient(circle at var(--x2,70%) 65%,hsla(calc(var(--h)*1deg + 40deg),70%,45%,.85),transparent 40%),
+   linear-gradient(120deg,hsl(calc(var(--h)*1deg - 20deg),60%,16%),hsl(calc(var(--h)*1deg + 20deg),50%,9%));
+  animation:pan 6s ease-in-out infinite alternate;filter:sepia(.35) contrast(1.05)}
+#game-video::before{content:"";position:absolute;left:-20%;right:-20%;bottom:0;height:42%;
+  background:radial-gradient(ellipse at 50% 100%,rgba(10,5,2,.95) 40%,transparent 70%)}
+#game-video::after{content:"";position:absolute;inset:0;
+  background:repeating-radial-gradient(circle at 37% 61%,rgba(255,255,255,.04) 0 1px,transparent 1px 4px);animation:flick .18s steps(2) infinite}
+@keyframes pan{to{transform:translate(4%,-3%) scale(1.06);filter:sepia(.35) brightness(1.15)}}
+@keyframes flick{50%{opacity:.4}}
+.runbar{position:absolute;left:0;bottom:0;height:4px;background:var(--amber);box-shadow:0 0 10px var(--amber);z-index:3;width:0}
+.runbar.go{animation:run var(--d,1s) linear infinite}
+@keyframes run{to{width:100%}}
+#clip-label{position:absolute;top:12px;right:12px;z-index:4;font-family:var(--round);font-weight:800;
+  background:rgba(28,17,11,.85);color:var(--tungsten);padding:4px 12px;border-radius:999px;box-shadow:0 0 0 1px var(--brass-lo)}
+
+/* clip ladder: film strip */
+.ladder{display:grid;grid-template-columns:repeat(6,1fr);gap:0;margin:18px 0 6px;padding:10px 8px;list-style:none;border-radius:10px;
+  background:
+   radial-gradient(circle,#1a0f09 0 3px,transparent 3.5px) 0 2px/18px 10px repeat-x,
+   radial-gradient(circle,#1a0f09 0 3px,transparent 3.5px) 0 calc(100% - 2px)/18px 10px repeat-x,
+   #4a3018}
+.ladder li{margin:0 3px;padding:10px 0;border-radius:6px;text-align:center;font-family:var(--round);font-weight:800;
+  background:#21140c;color:#8c7356;font-size:.95rem;position:relative}
+.ladder li span{display:block;font-size:.66rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.ladder li.used{background:linear-gradient(#5e3a1c,#3d2512);color:var(--muted);text-decoration:line-through;text-decoration-color:var(--ruby)}
+.ladder li.current{background:radial-gradient(circle at 50% 30%,#fff2d0,var(--amber) 60%,#c27120);color:#2b1a0c;
+  box-shadow:0 0 18px rgba(255,178,74,.7)}
+.ladder li.locked::after{content:"";position:absolute;top:6px;right:6px;width:7px;height:6px;border-radius:1px;background:#6e5434;
+  box-shadow:0 -4px 0 -1px #21140c,0 -5px 0 0 #6e5434}
+
+/* guess console */
+#search-container{position:relative;margin-top:12px}
+.guess-row{display:flex;gap:10px;flex-wrap:wrap}
+.guess-row .field{flex:1 1 260px;position:relative}
+#guess-input{width:100%;padding:13px 18px;border-radius:999px;border:0;font:inherit;font-size:1.05rem;
+  color:var(--cream);background:#140b06;box-shadow:inset 0 2px 5px #000,0 0 0 2px var(--brass-lo)}
+#guess-input::placeholder{color:#a68c6a}
+#guess-input:focus{outline:none;box-shadow:inset 0 2px 5px #000,0 0 0 3px var(--tungsten),0 0 20px rgba(255,178,74,.35)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+#autofill-dropdown{position:absolute;left:8px;right:8px;top:calc(100% + 6px);z-index:10;margin:0;padding:6px;list-style:none;
+  border-radius:16px;background:#2c1b11;box-shadow:0 0 0 1px var(--brass-lo),0 18px 30px rgba(0,0,0,.6);max-height:300px;overflow:auto}
+#autofill-dropdown[hidden]{display:none}
+#autofill-dropdown li{display:flex;align-items:center;gap:12px;padding:7px 10px;border-radius:10px;cursor:pointer}
+#autofill-dropdown li[aria-selected=true],#autofill-dropdown li:hover{background:rgba(255,178,74,.16)}
+.thumb{width:26px;height:38px;border-radius:4px;flex:none;box-shadow:0 0 0 1px rgba(0,0,0,.5);
+  background:linear-gradient(160deg,hsl(var(--t),60%,58%),hsl(calc(var(--t) + 50),45%,22%));position:relative;overflow:hidden}
+.thumb::after{content:"";position:absolute;left:4px;right:4px;bottom:5px;height:3px;background:rgba(255,240,210,.7);border-radius:2px;box-shadow:0 -5px 0 rgba(255,240,210,.35)}
+#autofill-dropdown em{color:var(--muted);font-style:normal;margin-left:auto;font-size:.85rem}
+#feedback{min-height:1.6em;margin:12px 0 0;text-align:center;font-family:var(--round);font-weight:800;font-size:1.1rem}
+#feedback.bad{color:var(--ruby)} #feedback.good{color:var(--sage)}
+
+/* reveal */
+#reveal-area{display:grid;grid-template-columns:auto 1fr;gap:22px;align-items:center;margin-top:16px;padding:18px;border-radius:20px;
+  background:linear-gradient(135deg,rgba(255,178,74,.14),rgba(0,0,0,.2));box-shadow:0 0 0 1px var(--brass-lo)}
+#reveal-area[hidden]{display:none}
+#reveal-poster{width:140px;aspect-ratio:2/3;border-radius:10px;position:relative;overflow:hidden;
+  background:linear-gradient(170deg,#e8b25a,#a4421f 55%,#2a0f08);box-shadow:0 10px 24px rgba(0,0,0,.6),0 0 0 3px var(--brass-lo)}
+#reveal-poster::before{content:"";position:absolute;inset:18% 20% auto;aspect-ratio:1;border-radius:50%;background:radial-gradient(circle,#fff1c7,#ffb24a 60%,transparent 62%)}
+#reveal-poster::after{content:"";position:absolute;left:14%;right:14%;bottom:12%;height:8px;border-radius:3px;background:rgba(255,236,200,.85);box-shadow:0 -14px 0 rgba(255,236,200,.4)}
+/* deliberate NO-POSTER treatment: a labelled film-can lid */
+#reveal-poster.none{background:
+   radial-gradient(circle at 50% 50%,#2b1a0c 0 6%,transparent 6.5%),
+   radial-gradient(circle at 50% 50%,var(--cream) 0 30%,transparent 30.5%),
+   repeating-radial-gradient(circle at 50% 50%,#6e4f2a 0 2px,#8f6c3a 2px 5px),
+   linear-gradient(#2b1a0c,#2b1a0c);
+  border-radius:50%;aspect-ratio:1;width:150px;box-shadow:0 0 0 5px var(--brass),0 0 0 7px #2b1a0c,0 12px 26px rgba(0,0,0,.6)}
+#reveal-poster.none::before{content:"NO POSTER\A ON FILE";white-space:pre;inset:auto;left:50%;top:50%;transform:translate(-50%,-50%) rotate(-8deg);
+  aspect-ratio:auto;border-radius:3px;background:none;color:#7a2c18;font:800 .62rem/1.15 var(--round);letter-spacing:.12em;text-align:center;
+  padding:3px 5px;border:2px solid #7a2c18;margin-top:24px}
+#reveal-poster.none::after{display:none}
+.reveal-meta small{display:block;color:var(--brass-hi);letter-spacing:.2em;text-transform:uppercase;font-size:.75rem;font-weight:700}
+#reveal-title{margin:4px 0 4px;font-family:var(--round);font-size:clamp(1.4rem,3vw,2.1rem);color:var(--tungsten)}
+.reveal-meta p{margin:0 0 14px;color:var(--muted)}
+@media(max-width:560px){ #reveal-area{grid-template-columns:1fr;justify-items:center;text-align:center}}
+
+/* ---------- Mock-state dev strip ---------- */
+#mock{position:fixed;right:14px;bottom:14px;z-index:60;max-width:calc(100% - 28px);display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  padding:8px 10px;border-radius:12px;background:rgba(14,9,6,.94);border:1px dashed #8a6a2c;font:12px/1.2 ui-monospace,Menlo,Consolas,monospace}
+#mock b{color:var(--brass-hi);margin-right:4px;letter-spacing:.08em}
+#mock button,#mock select{font:inherit;background:#2a1a12;color:var(--cream);border:1px solid #5b4128;border-radius:6px;padding:4px 7px}
+#mock button:hover{border-color:var(--amber)}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
 </head>
 <body>
-    <div id="top-bar">
-        <h1>Moviedle</h1>
-        <div style="text-align:right;">
-            <div id="movie-count">
-                <span id="status-dot"></span>
-                <span id="count-text">Movies: 0</span>
-            </div>
-            <div id="disk-info">Disk: -- GB free</div>
+<header id="top-bar">
+  <div class="logo"><span class="reel spin" aria-hidden="true"></span><h1>Moviedle</h1></div>
+  <div id="movie-count" class="plate" aria-live="polite"><span id="status-dot" aria-hidden="true"></span><span id="count-text">Movies: 42</span></div>
+  <div id="disk-info" class="plate">Disk: -- GB free</div>
+</header>
+
+<main id="main-container">
+  <aside class="cabinet">
+    <section id="download-panel" class="panel" aria-labelledby="dl-h">
+      <h2 id="dl-h">Reel Cabinet</h2>
+      <label class="lbl" for="download-slider"><span>Reels per difficulty</span><span id="slider-val">5</span></label>
+      <input type="range" id="download-slider" min="1" max="1000" value="5">
+      <fieldset>
+        <legend>Difficulty</legend>
+        <label class="diff"><input type="checkbox" name="difficulty" value="hard" checked><span class="knob"></span><b>Hard</b><small>100,000–249,999 votes</small></label>
+        <label class="diff"><input type="checkbox" name="difficulty" value="medium" checked><span class="knob"></span><b>Medium</b><small>250,000–499,999 votes</small></label>
+        <label class="diff"><input type="checkbox" name="difficulty" value="easy" checked><span class="knob"></span><b>Easy</b><small>500,000+ votes</small></label>
+      </fieldset>
+      <p id="difficulty-hint">5 movies from each selected difficulty</p>
+      <button id="download-btn" class="btn wide">Queue <span id="btn-count">5</span> each</button>
+      <p id="download-feedback" role="status"></p>
+    </section>
+    <section id="play-panel" class="panel" aria-labelledby="pl-h">
+      <h2 id="pl-h">Showtime</h2>
+      <button id="play-btn" class="btn wide" disabled>&#9654; Play Game</button>
+      <p class="ticket">Six clips. Each wrong guess runs a longer reel.</p>
+    </section>
+  </aside>
+
+  <section class="booth" aria-label="Projection screen">
+    <div class="projector" aria-hidden="true"><span class="reel spin"></span><i></i></div>
+    <div class="beam" aria-hidden="true"></div>
+    <div class="motes" aria-hidden="true"></div>
+    <div class="screen-wrap">
+      <div class="screen">
+        <div class="intermission" id="intermission"><div><h3>INTERMISSION</h3><p id="inter-sub">Thread a reel, then press Play Game.</p></div></div>
+        <div id="game-container" hidden>
+          <video id="game-video" controls autoplay muted playsinline aria-label="Movie clip"></video>
+          <div class="runbar" id="runbar"></div>
+          <div id="clip-label">Clip 1 / 6</div>
         </div>
+      </div>
+
+      <div id="game-ui" hidden>
+        <ol class="ladder" id="ladder" aria-label="Clip ladder"></ol>
+        <div id="search-container">
+          <div class="guess-row">
+            <div class="field">
+              <label for="guess-input" class="sr">Your guess</label>
+              <input id="guess-input" type="text" placeholder="Type movie name..." autocomplete="off"
+                role="combobox" aria-expanded="false" aria-controls="autofill-dropdown" aria-autocomplete="list">
+              <ul id="autofill-dropdown" role="listbox" hidden></ul>
+            </div>
+            <button id="guess-btn" class="btn">Guess</button>
+            <button id="give-up-btn" class="btn ghost">Give Up</button>
+          </div>
+        </div>
+        <p id="feedback" role="status"></p>
+        <div id="reveal-area" hidden>
+          <div id="reveal-poster" role="img" aria-label="Movie poster"></div>
+          <div class="reveal-meta">
+            <small id="reveal-kicker">Tonight's feature</small>
+            <h3 id="reveal-title">Inception</h3>
+            <p id="reveal-note">2010 · Easy reel</p>
+            <button id="next-btn" class="btn">Next Movie &#8594;</button>
+          </div>
+        </div>
+      </div>
     </div>
+  </section>
+</main>
 
-    <div id="main-container">
-        <!-- Download Panel -->
-        <div class="panel" id="download-panel">
-            <div class="slider-group">
-                <label>How many movies to download?</label>
-                <div class="slider-value" id="slider-val">5</div>
-                <input type="range" id="download-slider" min="1" max="1000" value="5">
-            </div>
-            <button id="download-btn">Download <span id="btn-count">5</span> Movies</button>
-            <div id="download-feedback" style="margin-top:15px; color:#888; font-size:0.95rem;"></div>
-        </div>
 
-        <!-- Play Panel -->
-        <div class="panel" id="play-panel">
-            <button id="play-btn" disabled>Play Game</button>
-        </div>
 
-        <!-- Game Area -->
-        <div id="game-container">
-            <video id="game-video" controls autoplay muted></video>
-            <div id="clip-label"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const downloadSlider = $('download-slider');
+const sliderVal = $('slider-val');
+const btnCount = $('btn-count');
+const downloadBtn = $('download-btn');
+const downloadFeedback = $('download-feedback');
+const difficultyInputs = [...document.querySelectorAll('input[name="difficulty"]')];
+const difficultyHint = $('difficulty-hint');
+const playBtn = $('play-btn');
+const gameContainer = $('game-container');
+const gameUi = $('game-ui');
+const intermission = $('intermission');
+const gameVideo = $('game-video');
+const clipLabel = $('clip-label');
+const runbar = $('runbar');
+const ladderEl = $('ladder');
+const searchContainer = $('search-container');
+const guessInput = $('guess-input');
+const guessBtn = $('guess-btn');
+const giveUpBtn = $('give-up-btn');
+const autofillDropdown = $('autofill-dropdown');
+const feedback = $('feedback');
+const revealArea = $('reveal-area');
+const revealTitle = $('reveal-title');
+const revealPoster = $('reveal-poster');
+const revealKicker = $('reveal-kicker');
+const revealNote = $('reveal-note');
+const nextBtn = $('next-btn');
+const statusDot = $('status-dot');
+const countText = $('count-text');
+const diskInfo = $('disk-info');
 
-            <div id="search-container">
-                <input type="text" id="guess-input" placeholder="Type movie name..." autocomplete="off">
-                <div id="autofill-dropdown"></div>
-            </div>
+let currentMovieDir = '';
+let currentClips = [];
+let currentMovieName = '';
+let currentPosterPath = '';
+let attempt = 0;
+let isGameActive = false;
+let searchTimeout = null;
 
-            <div class="button-row">
-                <button id="guess-btn">Guess</button>
-                <button id="give-up-btn">Give Up</button>
-            </div>
-            <div id="feedback"></div>
+function updateDownloadSummary() {
+    const count = downloadSlider.value;
+    const selected = difficultyInputs.filter((input) => input.checked);
+    sliderVal.textContent = count;
+    btnCount.textContent = count;
+    downloadSlider.style.setProperty('--p', `${((Number(count) - 1) / 999) * 100}%`);
+    difficultyHint.textContent = selected.length
+        ? `${count} movie${count === '1' ? '' : 's'} from each selected difficulty`
+        : 'Select at least one difficulty';
+    downloadBtn.disabled = selected.length === 0;
+}
 
-            <div id="reveal-area">
-                <h2 id="reveal-title"></h2>
-                <img id="reveal-poster" src="" alt="Poster">
-                <button id="next-btn">Next Movie</button>
-            </div>
-        </div>
-    </div>
+downloadSlider.addEventListener('input', updateDownloadSummary);
+difficultyInputs.forEach((input) => input.addEventListener('change', updateDownloadSummary));
+updateDownloadSummary();
 
-    <script>
-        const downloadSlider = document.getElementById('download-slider');
-        const sliderVal = document.getElementById('slider-val');
-        const btnCount = document.getElementById('btn-count');
-        const downloadBtn = document.getElementById('download-btn');
-        const downloadFeedback = document.getElementById('download-feedback');
-        const playBtn = document.getElementById('play-btn');
-        const gameContainer = document.getElementById('game-container');
-        const downloadPanel = document.getElementById('download-panel');
-        const playPanel = document.getElementById('play-panel');
-        const gameVideo = document.getElementById('game-video');
-        const clipLabel = document.getElementById('clip-label');
-        const guessInput = document.getElementById('guess-input');
-        const guessBtn = document.getElementById('guess-btn');
-        const giveUpBtn = document.getElementById('give-up-btn');
-        const autofillDropdown = document.getElementById('autofill-dropdown');
-        const feedback = document.getElementById('feedback');
-        const revealArea = document.getElementById('reveal-area');
-        const revealTitle = document.getElementById('reveal-title');
-        const revealPoster = document.getElementById('reveal-poster');
-        const nextBtn = document.getElementById('next-btn');
-        const countText = document.getElementById('count-text');
-        const statusDot = document.getElementById('status-dot');
+async function updateMovieCount() {
+    try {
+        const response = await fetch('/movie-count');
+        const data = await response.json();
+        countText.textContent = `Movies: ${data.downloaded}`;
+        playBtn.disabled = data.downloaded === 0;
+        statusDot.classList.toggle('on', data.downloading > 0);
+        $('inter-sub').textContent = data.downloaded
+            ? 'Thread a reel, then press Play Game.'
+            : 'The cabinet is empty. Queue some reels first.';
+    } catch (error) {
+        console.warn('Unable to update movie count', error);
+    }
+}
 
-        let currentMovieDir = '';
-        let currentClips = [];
-        let attempt = 0;
-        let currentPosterPath = '';
-        let isGameActive = false;
+async function updateDiskStatus() {
+    try {
+        const response = await fetch('/disk-status');
+        const data = await response.json();
+        diskInfo.textContent = `Disk: ${data.free_gb} GB free`;
+        diskInfo.classList.toggle('warning', data.low_space);
+    } catch (error) {
+        console.warn('Unable to update disk status', error);
+    }
+}
 
-        // --- Slider ---
-        downloadSlider.addEventListener('input', () => {
-            sliderVal.textContent = downloadSlider.value;
-            btnCount.textContent = downloadSlider.value;
+setInterval(updateMovieCount, 3000);
+setInterval(updateDiskStatus, 5000);
+updateMovieCount();
+updateDiskStatus();
+
+async function queueMovies() {
+    const selected = difficultyInputs.filter((input) => input.checked).map((input) => input.value);
+    if (!selected.length) {
+        downloadFeedback.textContent = 'Select at least one difficulty.';
+        downloadFeedback.className = 'err';
+        return;
+    }
+
+    const count = Number(downloadSlider.value);
+    downloadBtn.disabled = true;
+    downloadFeedback.className = '';
+    downloadFeedback.textContent = 'Queuing movies...';
+    try {
+        const response = await fetch('/download-movies', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({count, difficulties: selected}),
         });
-
-        // --- Poll movie count & disk status ---
-        async function updateMovieCount() {
-            try {
-                const resp = await fetch('/movie-count');
-                const data = await resp.json();
-                countText.textContent = `Movies: ${data.downloaded}`;
-                statusDot.classList.toggle('downloading', data.downloading > 0);
-                playBtn.disabled = data.downloaded === 0;
-            } catch (e) {}
-        }
-
-        async function updateDiskStatus() {
-            try {
-                const resp = await fetch('/disk-status');
-                const data = await resp.json();
-                const diskEl = document.getElementById('disk-info');
-                diskEl.textContent = `Disk: ${data.free_gb} GB free`;
-                diskEl.classList.toggle('warning', data.low_space);
-            } catch (e) {}
-        }
-
-        setInterval(updateMovieCount, 3000);
-        setInterval(updateDiskStatus, 5000);
-        updateMovieCount();
-        updateDiskStatus();
-
-        // --- Download ---
-        downloadBtn.addEventListener('click', async () => {
-            const count = parseInt(downloadSlider.value);
-            downloadBtn.disabled = true;
-            downloadFeedback.textContent = 'Queuing movies...';
-
-            try {
-                const resp = await fetch('/download-movies', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ count })
-                });
-                const data = await resp.json();
-                if (data.error) {
-                    downloadFeedback.textContent = `Error: ${data.error}`;
-                } else {
-                    downloadFeedback.textContent = `Queued ${data.queued} of ${data.requested} movies.`;
-                }
-            } catch (err) {
-                downloadFeedback.textContent = 'Failed to queue downloads.';
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            downloadFeedback.className = 'err';
+            if (response.status === 409 && data.available_by_difficulty) {
+                const available = selected.map((difficulty) => `${difficulty}: ${data.available_by_difficulty[difficulty] ?? 0}`).join(', ');
+                downloadFeedback.textContent = `${data.error} (${available})`;
+            } else {
+                downloadFeedback.textContent = data.error || 'Failed to queue downloads.';
             }
-            setTimeout(() => { downloadBtn.disabled = false; }, 1000);
+            return;
+        }
+        downloadFeedback.className = '';
+        downloadFeedback.textContent = `Queued ${data.queued} of ${data.requested_total} movies (${count} each: ${selected.join(', ')}).`;
+        updateMovieCount();
+    } catch (error) {
+        downloadFeedback.className = 'err';
+        downloadFeedback.textContent = 'Failed to queue downloads.';
+    } finally {
+        updateDownloadSummary();
+    }
+}
+
+downloadBtn.addEventListener('click', queueMovies);
+
+function closeDropdown() {
+    autofillDropdown.hidden = true;
+    guessInput.setAttribute('aria-expanded', 'false');
+}
+
+function setLadder() {
+    ladderEl.innerHTML = currentClips.map((clip, index) => {
+        const number = index + 1;
+        const state = number < attempt + 1 ? 'used' : number === attempt + 1 ? 'current' : 'locked';
+        return `<li class="${state}" aria-current="${state === 'current' ? 'step' : 'false'}">${number}s<span>${state}</span></li>`;
+    }).join('');
+}
+
+function loadClip(index) {
+    const clip = currentClips[index];
+    if (!clip) return;
+    clipLabel.textContent = `Clip ${index + 1} / ${currentClips.length}`;
+    gameVideo.src = `/movies/${encodeURIComponent(currentMovieDir)}/${encodeURIComponent(clip)}`;
+    gameVideo.load();
+    gameVideo.play().catch(() => {});
+    runbar.classList.remove('go');
+    runbar.style.setProperty('--d', `${index + 1}s`);
+    void runbar.offsetWidth;
+    runbar.classList.add('go');
+    setLadder();
+}
+
+function resetReveal() {
+    revealArea.hidden = true;
+    revealPoster.classList.remove('none');
+    revealPoster.style.backgroundImage = '';
+    revealPoster.setAttribute('aria-label', 'Movie poster');
+}
+
+function startGame(data) {
+    currentMovieDir = data.movie_dir;
+    currentClips = data.clips || [1, 2, 3, 4, 5, 6].map((second) => `${second}s.mp4`);
+    currentMovieName = data.movie_name || '';
+    currentPosterPath = data.poster_path || '';
+    attempt = 0;
+    isGameActive = true;
+    intermission.hidden = true;
+    gameContainer.hidden = false;
+    gameUi.hidden = false;
+    resetReveal();
+    feedback.textContent = '';
+    feedback.className = '';
+    guessInput.value = '';
+    guessInput.disabled = false;
+    guessBtn.disabled = false;
+    giveUpBtn.disabled = false;
+    closeDropdown();
+    loadClip(0);
+    guessInput.focus();
+}
+
+playBtn.addEventListener('click', async () => {
+    try {
+        const response = await fetch('/game/start');
+        const data = await response.json();
+        if (!response.ok) {
+            feedback.textContent = data.error || 'No movies available.';
+            return;
+        }
+        startGame(data);
+    } catch (error) {
+        feedback.textContent = 'Failed to start game.';
+    }
+});
+
+function showReveal(won) {
+    isGameActive = false;
+    runbar.classList.remove('go');
+    gameVideo.pause();
+    closeDropdown();
+    feedback.textContent = won ? `Correct! ${currentMovieName}` : `It was ${currentMovieName}`;
+    feedback.className = won ? 'good' : 'bad';
+    revealKicker.textContent = won ? `Solved on clip ${attempt + 1} of 6` : 'Reel ended · revealed';
+    revealTitle.textContent = currentMovieName;
+    revealNote.textContent = currentPosterPath ? 'Poster from the movie catalogue' : 'Poster not on file · film can archived';
+    if (currentPosterPath) {
+        revealPoster.classList.remove('none');
+        revealPoster.style.backgroundImage = `url("https://image.tmdb.org/t/p/w500${currentPosterPath}")`;
+        revealPoster.setAttribute('aria-label', `Poster for ${currentMovieName}`);
+    } else {
+        revealPoster.classList.add('none');
+        revealPoster.style.backgroundImage = '';
+        revealPoster.setAttribute('aria-label', 'No poster available');
+    }
+    revealArea.hidden = false;
+    guessInput.disabled = true;
+    guessBtn.disabled = true;
+    giveUpBtn.disabled = true;
+    setLadder();
+    nextBtn.focus();
+}
+
+async function revealMovie() {
+    try {
+        const response = await fetch('/game/reveal', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({movie_dir: currentMovieDir}),
         });
+        const data = await response.json();
+        if (!response.ok) {
+            feedback.textContent = data.error || 'Unable to reveal movie.';
+            return;
+        }
+        currentMovieName = data.movie_name || currentMovieName;
+        currentPosterPath = data.poster_path || '';
+        showReveal(false);
+        updateMovieCount();
+    } catch (error) {
+        feedback.textContent = 'Error revealing movie.';
+    }
+}
 
-        // --- Autofill (searches all TMDB movies) ---
-        let searchTimeout = null;
+async function submitGuess() {
+    if (!isGameActive) return;
+    const guess = guessInput.value.trim();
+    if (!guess) return;
+    try {
+        const response = await fetch('/game/guess', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({movie_dir: currentMovieDir, guess}),
+        });
+        const data = await response.json();
+        if (data.correct) {
+            currentMovieName = data.movie_name || currentMovieName;
+            currentPosterPath = data.poster_path || '';
+            showReveal(true);
+            updateMovieCount();
+            return;
+        }
+        attempt += 1;
+        feedback.textContent = `Wrong! Attempt ${attempt} / ${currentClips.length}`;
+        feedback.className = 'bad';
+        guessInput.value = '';
+        closeDropdown();
+        if (attempt >= currentClips.length) {
+            await revealMovie();
+        } else {
+            loadClip(attempt);
+        }
+    } catch (error) {
+        feedback.textContent = 'Error checking guess.';
+    }
+}
 
-        guessInput.addEventListener('input', () => {
-            const val = guessInput.value.trim();
-            if (!val || !isGameActive) {
-                autofillDropdown.style.display = 'none';
+guessBtn.addEventListener('click', submitGuess);
+giveUpBtn.addEventListener('click', revealMovie);
+guessInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        closeDropdown();
+        submitGuess();
+    }
+    if (event.key === 'Escape') closeDropdown();
+});
+
+guessInput.addEventListener('input', () => {
+    const value = guessInput.value.trim();
+    if (!value || !isGameActive) {
+        closeDropdown();
+        return;
+    }
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(async () => {
+        try {
+            const response = await fetch(`/search-movies?q=${encodeURIComponent(value)}`);
+            const movies = await response.json();
+            if (!movies.length) {
+                closeDropdown();
                 return;
             }
-
-            if (searchTimeout) clearTimeout(searchTimeout);
-            searchTimeout = setTimeout(async () => {
-                try {
-                    const resp = await fetch('/search-movies?q=' + encodeURIComponent(val));
-                    const movies = await resp.json();
-
-                    if (!movies.length) {
-                        autofillDropdown.style.display = 'none';
-                        return;
-                    }
-
-                    autofillDropdown.innerHTML = movies.map(m => `
-                        <div class="autofill-item" data-name="${m.display_name}">
-                            <img src="${m.poster_path ? `https://image.tmdb.org/t/p/w92${m.poster_path}` : ''}" alt="">
-                            <span>${m.display_name}</span>
-                        </div>
-                    `).join('');
-                    autofillDropdown.style.display = 'block';
-
-                    autofillDropdown.querySelectorAll('.autofill-item').forEach(item => {
-                        item.addEventListener('click', () => {
-                            guessInput.value = item.dataset.name;
-                            autofillDropdown.style.display = 'none';
-                        });
-                    });
-                } catch (e) {
-                    autofillDropdown.style.display = 'none';
-                }
-            }, 300);
-        });
-
-        document.addEventListener('click', (e) => {
-            if (!document.getElementById('search-container').contains(e.target)) {
-                autofillDropdown.style.display = 'none';
-            }
-        });
-
-        // --- Play Game ---
-        playBtn.addEventListener('click', async () => {
-            try {
-                const resp = await fetch('/game/start');
-                if (!resp.ok) {
-                    alert('No movies available!');
-                    return;
-                }
-                const data = await resp.json();
-                currentMovieDir = data.movie_dir;
-                currentClips = data.clips;
-                currentPosterPath = data.poster_path || '';
-                attempt = 0;
-                isGameActive = true;
-
-                downloadPanel.classList.add('hidden');
-                playPanel.classList.add('hidden');
-                gameContainer.style.display = 'flex';
-                revealArea.style.display = 'none';
-                feedback.textContent = '';
-                feedback.className = '';
-                guessInput.value = '';
-                guessBtn.disabled = false;
-                giveUpBtn.disabled = false;
-                guessInput.disabled = false;
-
-                loadClip(0);
-            } catch (err) {
-                alert('Failed to start game.');
-            }
-        });
-
-        function loadClip(index) {
-            const clip = currentClips[index];
-            gameVideo.src = `/movies/${encodeURIComponent(currentMovieDir)}/${clip}`;
-            gameVideo.load();
-            gameVideo.play();
-            clipLabel.textContent = `Clip ${index + 1} / ${currentClips.length}`;
+            autofillDropdown.innerHTML = movies.map((movie) => {
+                const poster = movie.poster_path ? `https://image.tmdb.org/t/p/w92${movie.poster_path}` : '';
+                return `<li role="option" data-name="${movie.display_name.replace(/"/g, '&quot;')}"><span class="thumb" style="${poster ? `background-image:url('${poster}')` : ''}"></span><span>${movie.display_name}</span></li>`;
+            }).join('');
+            autofillDropdown.hidden = false;
+            guessInput.setAttribute('aria-expanded', 'true');
+            autofillDropdown.querySelectorAll('li').forEach((item) => item.addEventListener('mousedown', (event) => {
+                event.preventDefault();
+                guessInput.value = item.dataset.name;
+                closeDropdown();
+                guessInput.focus();
+            }));
+        } catch (error) {
+            closeDropdown();
         }
+    }, 300);
+});
 
-        // --- Guess ---
-        guessBtn.addEventListener('click', async () => {
-            if (!isGameActive) return;
-            const guess = guessInput.value.trim();
-            if (!guess) return;
+document.addEventListener('click', (event) => {
+    if (!searchContainer.contains(event.target)) closeDropdown();
+});
 
-            try {
-                const resp = await fetch('/game/guess', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ movie_dir: currentMovieDir, guess })
-                });
-                const data = await resp.json();
-
-                if (data.correct) {
-                    feedback.textContent = `Correct! It was ${data.movie_name}`;
-                    feedback.className = 'correct';
-                    currentPosterPath = data.poster_path || '';
-                    reveal(data.movie_name, true);
-                } else {
-                    attempt++;
-                    feedback.textContent = `Wrong! Attempt ${attempt} / ${currentClips.length}`;
-                    feedback.className = 'wrong';
-
-                    if (attempt < currentClips.length) {
-                        loadClip(attempt);
-                    } else {
-                        // Out of clips - reveal
-                        const revealResp = await fetch('/game/reveal', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ movie_dir: currentMovieDir })
-                        });
-                        const revealData = await revealResp.json();
-                        currentPosterPath = revealData.poster_path || '';
-                        reveal(revealData.movie_name, false);
-                    }
-                }
-            } catch (err) {
-                feedback.textContent = 'Error checking guess.';
-            }
-        });
-
-        guessInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                autofillDropdown.style.display = 'none';
-                guessBtn.click();
-            }
-        });
-
-        // --- Give Up ---
-        giveUpBtn.addEventListener('click', async () => {
-            if (!isGameActive) return;
-
-            try {
-                const revealResp = await fetch('/game/reveal', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ movie_dir: currentMovieDir })
-                });
-                const revealData = await revealResp.json();
-                currentPosterPath = revealData.poster_path || '';
-                reveal(revealData.movie_name, false);
-            } catch (err) {
-                feedback.textContent = 'Error revealing movie.';
-            }
-        });
-
-        function reveal(movieName, wasCorrect) {
-            isGameActive = false;
-            guessBtn.disabled = true;
-            giveUpBtn.disabled = true;
-            guessInput.disabled = true;
-            revealArea.style.display = 'flex';
-            revealTitle.textContent = wasCorrect ? `Correct! ${movieName}` : `It was ${movieName}`;
-            if (currentPosterPath) {
-                revealPoster.src = `https://image.tmdb.org/t/p/w500${currentPosterPath}`;
-                revealPoster.style.display = 'block';
-            } else {
-                revealPoster.style.display = 'none';
-            }
+nextBtn.addEventListener('click', async () => {
+    revealArea.hidden = true;
+    gameContainer.hidden = true;
+    gameUi.hidden = true;
+    intermission.hidden = false;
+    await updateMovieCount();
+    try {
+        const response = await fetch('/movie-count');
+        const data = await response.json();
+        if (data.downloaded > 0) {
+            const startResponse = await fetch('/game/start');
+            if (startResponse.ok) startGame(await startResponse.json());
         }
-
-        // --- Next Movie ---
-        nextBtn.addEventListener('click', async () => {
-            await updateMovieCount();
-
-            // Reset to main view
-            gameContainer.style.display = 'none';
-            downloadPanel.classList.remove('hidden');
-            playPanel.classList.remove('hidden');
-
-            // If movies still exist, auto-start next game
-            try {
-                const resp = await fetch('/movie-count');
-                const data = await resp.json();
-                if (data.downloaded > 0) {
-                    playBtn.click();
-                }
-            } catch (e) {}
-        });
-    </script>
+    } catch (error) {
+        console.warn('Unable to start next movie', error);
+    }
+});
+</script>
 </body>
 </html>

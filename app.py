@@ -2,6 +2,7 @@ from flask import Flask, render_template, jsonify, send_from_directory, request
 import requests
 import os
 import random
+import sqlite3
 import json
 import subprocess
 import sys
@@ -24,6 +25,15 @@ TMDB_API_KEY = os.getenv('TMDB_API_KEY')
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 METADATA_FILE = os.path.join(PROJECT_DIR, "movies_db.json")
+MOVIES_DB_FILE = os.getenv("MOVIES_DB_PATH", os.path.join(PROJECT_DIR, "data", "movies.db"))
+
+# Vote-count bands used when selecting titles from the local CS50 database.
+# The upper bound is exclusive so a title belongs to exactly one band.
+DIFFICULTY_BANDS = {
+    "hard": (100_000, 250_000),
+    "medium": (250_000, 500_000),
+    "easy": (500_000, None),
+}
 
 # Disk-space thresholds (bytes)
 MIN_FREE_DOWNLOAD = 5 * 1024 ** 3   # 5 GB before starting a download
@@ -37,6 +47,7 @@ CRITICAL_FREE = 1 * 1024 ** 3       # 1 GB -> abort active download immediately
 download_queue = Queue()
 active_downloads = set()
 active_downloads_lock = threading.Lock()
+selection_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # qBittorrent helpers
@@ -234,14 +245,21 @@ def _save_metadata(meta):
         json.dump(meta, f, indent=2)
 
 
-def _add_movie_metadata(sanitized_name, title, year, poster_path):
+def _add_movie_metadata(sanitized_name, title, year, poster_path, votes=None, rating=None, difficulty=None):
     meta = _load_metadata()
-    meta[sanitized_name] = {
+    entry = {
         "title": title,
         "year": year,
         "poster_path": poster_path,
         "display_name": f"{title} ({year})" if year else title,
     }
+    if votes is not None:
+        entry["votes"] = votes
+    if rating is not None:
+        entry["rating"] = rating
+    if difficulty:
+        entry["difficulty"] = difficulty
+    meta[sanitized_name] = entry
     _save_metadata(meta)
 
 
@@ -271,66 +289,83 @@ def _delete_movie(sanitized_name):
 
 
 # ---------------------------------------------------------------------------
-# TMDB helpers
+# Local CS50 movie database helpers
 # ---------------------------------------------------------------------------
 
-def _build_tmdb_params(page):
-    return {
-        "api_key": TMDB_API_KEY,
-        "sort_by": "popularity.desc",
-        "page": page,
-        "include_adult": "false",
-        "with_original_language": "en",
-        "vote_average.gte": "5",
-        "vote_average.lte": "10",
-        "vote_count.gte": "500",
-        "with_runtime.gte": "0",
-        "with_runtime.lte": "360",
-    }
+def _local_db_available():
+    return os.path.isfile(MOVIES_DB_FILE)
 
 
-def _pick_movies_not_downloaded(count):
+def _open_local_movies_db():
+    if not _local_db_available():
+        raise FileNotFoundError(
+            f"Local movies database not found at {MOVIES_DB_FILE}. "
+            "Copy the CS50 movies.db into the project's data directory or set MOVIES_DB_PATH."
+        )
+    connection = sqlite3.connect(MOVIES_DB_FILE)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def _pick_movies_not_downloaded(count, difficulties=None):
+    """Pick *count* random movies for each requested vote-count difficulty."""
+    if difficulties is None:
+        difficulties = list(DIFFICULTY_BANDS)
+
     downloaded = _get_downloaded_movies()
     with active_downloads_lock:
         in_progress = set(active_downloads)
-    excluded = downloaded | in_progress
+    # Jobs waiting in the queue have not reached ``active_downloads`` yet, so
+    # include them while selecting the next batch to avoid duplicate downloads.
+    with download_queue.mutex:
+        queued = {
+            _sanitize_dirname(job.get("display_name", ""))
+            for job in list(download_queue.queue)
+            if isinstance(job, dict) and job.get("display_name")
+        }
+    excluded = downloaded | in_progress | queued
 
     picked = []
-    max_pages = 100
-    pages = list(range(1, max_pages + 1))
-    random.shuffle(pages)
 
-    for page in pages:
-        if len(picked) >= count:
-            break
-        url = f"{TMDB_BASE_URL}/discover/movie"
-        params = _build_tmdb_params(page)
-        try:
-            resp = requests.get(url, params=params, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            results = data.get("results", [])
-            if not results:
-                break
-            random.shuffle(results)
-            for movie in results:
-                title = movie.get("title", "")
-                release_date = movie.get("release_date", "")
-                year = release_date[:4] if release_date and len(release_date) >= 4 else ""
+    query = (
+        "SELECT movies.title, movies.year, ratings.rating, ratings.votes "
+        "FROM movies JOIN ratings ON ratings.movie_id = movies.id "
+        "WHERE ratings.votes >= ? AND (? IS NULL OR ratings.votes < ?) "
+        "ORDER BY RANDOM()"
+    )
+
+    with _open_local_movies_db() as connection:
+        for difficulty in difficulties:
+            lower, upper = DIFFICULTY_BANDS[difficulty]
+            rows = connection.execute(query, (lower, upper, upper)).fetchall()
+            candidates = []
+            seen = set()
+            for row in rows:
+                title = row["title"] or ""
+                year = str(row["year"]) if row["year"] is not None else ""
+                if not title:
+                    continue
                 display_name = f"{title} ({year})" if year else title
                 sanitized = _sanitize_dirname(display_name)
-                if sanitized not in excluded:
-                    picked.append({
-                        "display_name": display_name,
-                        "title": title,
-                        "year": year,
-                        "poster_path": movie.get("poster_path"),
-                    })
-                    excluded.add(sanitized)
-                    if len(picked) >= count:
-                        break
-        except Exception:
-            break
+                if sanitized in excluded or sanitized in seen:
+                    continue
+                seen.add(sanitized)
+                candidates.append({
+                    "display_name": display_name,
+                    "title": title,
+                    "year": year,
+                    "poster_path": "",
+                    "votes": int(row["votes"]),
+                    "rating": row["rating"],
+                    "difficulty": difficulty,
+                })
+                if len(candidates) >= count:
+                    break
+
+            for movie in candidates[:count]:
+                sanitized = _sanitize_dirname(movie["display_name"])
+                excluded.add(sanitized)
+                picked.append(movie)
     return picked
 
 
@@ -560,6 +595,9 @@ def _download_worker():
                     job["title"],
                     job["year"],
                     job.get("poster_path", ""),
+                    votes=job.get("votes"),
+                    rating=job.get("rating"),
+                    difficulty=job.get("difficulty"),
                 )
             else:
                 print(f"Download pipeline returned False for: {job['display_name']}")
@@ -587,24 +625,78 @@ def index():
 
 @app.route('/download-movies', methods=["POST"])
 def download_movies():
-    if not TMDB_API_KEY:
-        return jsonify({"error": "TMDB_API_KEY not configured."}), 500
-
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "request body must be a JSON object"}), 400
     count = data.get("count", 1)
 
-    if not isinstance(count, int) or count < 1 or count > 1000:
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1 or count > 1000:
         return jsonify({"error": "count must be an integer 1-1000"}), 400
 
-    movies = _pick_movies_not_downloaded(count)
-    for movie in movies:
-        download_queue.put(movie)
+    raw_difficulties = data.get("difficulties", data.get("difficulty"))
+    if raw_difficulties is None:
+        difficulties = list(DIFFICULTY_BANDS)
+    elif isinstance(raw_difficulties, str):
+        if raw_difficulties.strip().lower() == "all":
+            difficulties = list(DIFFICULTY_BANDS)
+        else:
+            difficulties = [item.strip().lower() for item in raw_difficulties.split(",") if item.strip()]
+    elif isinstance(raw_difficulties, list):
+        difficulties = [item.strip().lower() for item in raw_difficulties if isinstance(item, str) and item.strip()]
+    else:
+        return jsonify({"error": "difficulties must be a list or comma-separated string"}), 400
+
+    # Preserve the configured order while removing duplicates.
+    difficulties = list(dict.fromkeys(difficulties))
+    invalid = [difficulty for difficulty in difficulties if difficulty not in DIFFICULTY_BANDS]
+    if invalid or not difficulties:
+        return jsonify({
+            "error": "difficulties must contain only easy, medium, or hard",
+            "invalid": invalid,
+        }), 400
+
+    with selection_lock:
+        try:
+            movies = _pick_movies_not_downloaded(count, difficulties)
+        except FileNotFoundError as exc:
+            return jsonify({"error": str(exc)}), 500
+        except sqlite3.Error as exc:
+            return jsonify({"error": f"Unable to read local movies database: {exc}"}), 500
+
+        queued_by_difficulty = {
+            difficulty: sum(movie.get("difficulty") == difficulty for movie in movies)
+            for difficulty in difficulties
+        }
+        insufficient = {
+            difficulty: queued_by_difficulty[difficulty]
+            for difficulty in difficulties
+            if queued_by_difficulty[difficulty] < count
+        }
+        if insufficient:
+            return jsonify({
+                "error": "Not enough eligible movies for one or more difficulty levels",
+                "requested_per_difficulty": count,
+                "available_by_difficulty": queued_by_difficulty,
+                "difficulties": difficulties,
+            }), 409
+
+        for movie in movies:
+            download_queue.put(movie)
 
     print(f"Queued {len(movies)} movies for download (requested {count}).")
     for m in movies:
         print(f"  - {m['display_name']}")
 
-    return jsonify({"queued": len(movies), "requested": count})
+    return jsonify({
+        "queued": len(movies),
+        "requested": count,
+        "requested_per_difficulty": count,
+        "requested_total": count * len(difficulties),
+        "difficulties": difficulties,
+        "queued_by_difficulty": queued_by_difficulty,
+    })
 
 
 @app.route('/movie-count')
@@ -624,6 +716,9 @@ def movies_list():
             "movie_dir": key,
             "display_name": info.get("display_name", key),
             "poster_path": info.get("poster_path"),
+            "votes": info.get("votes"),
+            "rating": info.get("rating"),
+            "difficulty": info.get("difficulty"),
         })
     movies.sort(key=lambda m: m["display_name"])
     return jsonify(movies)
