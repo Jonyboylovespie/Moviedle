@@ -115,8 +115,9 @@ legend{font-weight:600;margin-bottom:6px}
 .ticket{font-size:.85rem;color:var(--muted);text-align:center;margin:10px 0 0}
 
 /* ---------- Booth / screen ---------- */
-.booth{position:relative;padding:26px 26px 22px 26px;border-radius:28px;overflow:hidden;
+.booth{position:relative;padding:26px 26px 22px 26px;border-radius:28px;
   background:radial-gradient(ellipse at 10% 0%,#3a2416,#1a0f09 70%);box-shadow:0 0 0 1px rgba(209,169,84,.3),0 18px 40px rgba(0,0,0,.55)}
+.booth-fx{position:absolute;inset:0;border-radius:inherit;overflow:hidden;pointer-events:none}
 .projector{position:absolute;left:16px;top:16px;width:82px;height:62px;border-radius:12px 12px 22px 12px;z-index:3;
   background:linear-gradient(160deg,var(--walnut-3),#1a0f09);box-shadow:0 0 0 1px var(--brass-lo)}
 .projector .reel{position:absolute;--s:36px;top:8px;left:10px}
@@ -264,8 +265,10 @@ legend{font-weight:600;margin-bottom:6px}
 
   <section class="booth" aria-label="Projection screen">
     <div class="projector" aria-hidden="true"><span class="reel spin"></span><i></i></div>
-    <div class="beam" aria-hidden="true"></div>
-    <div class="motes" aria-hidden="true"></div>
+    <div class="booth-fx" aria-hidden="true">
+      <div class="beam"></div>
+      <div class="motes"></div>
+    </div>
     <div class="screen-wrap">
       <div class="screen">
         <div class="intermission" id="intermission"><div><h3>INTERMISSION</h3><p id="inter-sub">Thread a reel, then press Play Game.</p></div></div>
