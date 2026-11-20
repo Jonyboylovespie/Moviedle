@@ -5,3 +5,5 @@ __pycache__/
 Movies/
 data/movies.db
 .encoding/
+movies_db.json
+.local/

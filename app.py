@@ -928,4 +928,7 @@ def serve_movie(subpath):
 
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000,debug=True)
+    # The Werkzeug debugger allows arbitrary code execution, so it is opt-in
+    # for local development only. Never enable it on a reachable server.
+    debug = os.getenv("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+    app.run(host="0.0.0.0", port=5000, debug=debug)
