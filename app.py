@@ -24,6 +24,9 @@ app = Flask(__name__)
 
 TMDB_API_KEY = os.getenv('TMDB_API_KEY')
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
+QBITTORRENT_URL = os.getenv("QBITTORRENT_URL", "http://localhost:8080").rstrip("/")
+QBITTORRENT_USERNAME = os.getenv("QBITTORRENT_USERNAME", "")
+QBITTORRENT_PASSWORD = os.getenv("QBITTORRENT_PASSWORD", "")
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 METADATA_FILE = os.path.join(PROJECT_DIR, "movies_db.json")
 # Clips are encoded here, then moved into Movies/ only once all six exist, so
@@ -99,12 +102,26 @@ def _resolve_search_link(url):
 
 
 def _build_opener():
+    """Return a cookie-aware opener, logged in to qBittorrent if configured.
+
+    Credentials come from QBITTORRENT_USERNAME / QBITTORRENT_PASSWORD. When
+    they are unset the opener relies on qBittorrent's localhost auth bypass.
+    """
     jar = CookieJar()
-    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    if QBITTORRENT_USERNAME:
+        body = _api_request(
+            opener,
+            "/api/v2/auth/login",
+            data={"username": QBITTORRENT_USERNAME, "password": QBITTORRENT_PASSWORD},
+        )
+        if body.strip() != "Ok.":
+            raise RuntimeError("qBittorrent login failed; check QBITTORRENT_USERNAME/QBITTORRENT_PASSWORD")
+    return opener
 
 
 def _api_request(opener, path, data=None, method=None):
-    url = f"http://localhost:8080{path}"
+    url = f"{QBITTORRENT_URL}{path}"
     encoded_data = None
     if data is not None:
         encoded_data = urllib.parse.urlencode(data).encode("utf-8")
