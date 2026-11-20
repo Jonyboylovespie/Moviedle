@@ -14,6 +14,7 @@ from http.cookiejar import CookieJar
 from dotenv import load_dotenv
 import threading
 import re
+import uuid
 from queue import Queue
 import shutil
 
@@ -40,6 +41,13 @@ MIN_FREE_DOWNLOAD = 5 * 1024 ** 3   # 5 GB before starting a download
 MIN_FREE_ENCODE = 2 * 1024 ** 3     # 2 GB before running ffmpeg
 CRITICAL_FREE = 1 * 1024 ** 3       # 1 GB -> abort active download immediately
 
+# Three workers keeps the queue moving while limiting simultaneous torrent and
+# ffmpeg resource usage. Set DOWNLOAD_WORKERS to tune this for the host.
+try:
+    DOWNLOAD_WORKERS = max(1, min(int(os.getenv("DOWNLOAD_WORKERS", "3")), 8))
+except ValueError:
+    DOWNLOAD_WORKERS = 3
+
 # ---------------------------------------------------------------------------
 # Thread-safe download queue / state
 # ---------------------------------------------------------------------------
@@ -47,6 +55,7 @@ CRITICAL_FREE = 1 * 1024 ** 3       # 1 GB -> abort active download immediately
 download_queue = Queue()
 active_downloads = set()
 active_downloads_lock = threading.Lock()
+metadata_lock = threading.RLock()
 selection_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -216,51 +225,60 @@ def _get_video_duration(path):
 # ---------------------------------------------------------------------------
 
 def _load_metadata():
-    if os.path.exists(METADATA_FILE):
-        with open(METADATA_FILE, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-    else:
-        meta = {}
+    with metadata_lock:
+        if os.path.exists(METADATA_FILE):
+            with open(METADATA_FILE, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        else:
+            meta = {}
 
-    # Auto-populate any existing directories not yet in metadata
-    movies_dir = os.path.join(PROJECT_DIR, "Movies")
-    if os.path.exists(movies_dir):
-        for d in os.listdir(movies_dir):
-            dpath = os.path.join(movies_dir, d)
-            if os.path.isdir(dpath) and d not in meta:
-                meta[d] = {
-                    "title": d,
-                    "year": "",
-                    "poster_path": "",
-                    "display_name": d,
-                }
-        if meta and not os.path.exists(METADATA_FILE):
-            _save_metadata(meta)
+        # Auto-populate any existing directories not yet in metadata
+        movies_dir = os.path.join(PROJECT_DIR, "Movies")
+        if os.path.exists(movies_dir):
+            for d in os.listdir(movies_dir):
+                dpath = os.path.join(movies_dir, d)
+                if os.path.isdir(dpath) and d not in meta:
+                    meta[d] = {
+                        "title": d,
+                        "year": "",
+                        "poster_path": "",
+                        "display_name": d,
+                    }
+            if meta and not os.path.exists(METADATA_FILE):
+                _save_metadata(meta)
 
-    return meta
+        return meta
 
 
 def _save_metadata(meta):
-    with open(METADATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+    with metadata_lock:
+        temporary_file = f"{METADATA_FILE}.{uuid.uuid4().hex}.tmp"
+        try:
+            with open(temporary_file, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+            os.replace(temporary_file, METADATA_FILE)
+        finally:
+            if os.path.exists(temporary_file):
+                os.remove(temporary_file)
 
 
 def _add_movie_metadata(sanitized_name, title, year, poster_path, votes=None, rating=None, difficulty=None):
-    meta = _load_metadata()
-    entry = {
-        "title": title,
-        "year": year,
-        "poster_path": poster_path,
-        "display_name": f"{title} ({year})" if year else title,
-    }
-    if votes is not None:
-        entry["votes"] = votes
-    if rating is not None:
-        entry["rating"] = rating
-    if difficulty:
-        entry["difficulty"] = difficulty
-    meta[sanitized_name] = entry
-    _save_metadata(meta)
+    with metadata_lock:
+        meta = _load_metadata()
+        entry = {
+            "title": title,
+            "year": year,
+            "poster_path": poster_path,
+            "display_name": f"{title} ({year})" if year else title,
+        }
+        if votes is not None:
+            entry["votes"] = votes
+        if rating is not None:
+            entry["rating"] = rating
+        if difficulty:
+            entry["difficulty"] = difficulty
+        meta[sanitized_name] = entry
+        _save_metadata(meta)
 
 
 # ---------------------------------------------------------------------------
@@ -282,10 +300,11 @@ def _delete_movie(sanitized_name):
     movie_path = os.path.join(PROJECT_DIR, "Movies", sanitized_name)
     if os.path.exists(movie_path):
         shutil.rmtree(movie_path)
-    meta = _load_metadata()
-    if sanitized_name in meta:
-        del meta[sanitized_name]
-        _save_metadata(meta)
+    with metadata_lock:
+        meta = _load_metadata()
+        if sanitized_name in meta:
+            del meta[sanitized_name]
+            _save_metadata(meta)
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +409,7 @@ def _download_and_process_movie(movie_name):
 
     print(f"Adding torrent for {movie_name}: {link[:100]}...")
     opener = _build_opener()
-    tag = f"moviedle_{int(time.time() * 1000)}"
+    tag = f"moviedle_{uuid.uuid4().hex}"
 
     # Add torrent
     try:
@@ -611,7 +630,12 @@ def _download_worker():
             download_queue.task_done()
 
 
-threading.Thread(target=_download_worker, daemon=True).start()
+for worker_number in range(1, DOWNLOAD_WORKERS + 1):
+    threading.Thread(
+        target=_download_worker,
+        name=f"moviedle-download-{worker_number}",
+        daemon=True,
+    ).start()
 
 
 # ---------------------------------------------------------------------------
@@ -704,7 +728,12 @@ def movie_count():
     downloaded = _get_movie_count()
     with active_downloads_lock:
         downloading = len(active_downloads)
-    return jsonify({"downloaded": downloaded, "downloading": downloading})
+    return jsonify({
+        "downloaded": downloaded,
+        "downloading": downloading,
+        "queued": download_queue.qsize(),
+        "workers": DOWNLOAD_WORKERS,
+    })
 
 
 @app.route('/movies/list')
