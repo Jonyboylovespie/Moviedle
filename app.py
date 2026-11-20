@@ -19,6 +19,10 @@ import shutil
 
 load_dotenv()
 
+# systemd gives us a pipe, so stdout is block-buffered and print() output can
+# sit unseen for a long time. Line-buffer it so worker logs reach journalctl.
+sys.stdout.reconfigure(line_buffering=True)
+
 app = Flask(__name__)
 
 QBITTORRENT_URL = os.getenv("QBITTORRENT_URL", "http://localhost:8080").rstrip("/")
@@ -185,26 +189,123 @@ def stop_and_delete_search(opener, search_id):
             pass
 
 
+# Release-name tokens that mark a non-English release. Matched as whole tokens
+# (case-insensitive), so "ITA" never matches "Vita" and "Rus" never "Russell".
+NON_ENGLISH_TOKENS = {
+    "spanish", "español", "espanol", "castellano", "latino", "esp", "spa",
+    "french", "truefrench", "subfrench", "vf", "vff", "vfq", "vostfr",
+    "german", "deutsch", "ger",
+    "italian", "italiano", "ita",
+    "hindi", "tamil", "telugu", "malayalam", "kannada",
+    "russian", "rus",
+    "portuguese", "português", "portugues", "dublado", "legendado",
+    "polish", "pl", "lektor",
+    "turkish", "türkçe", "turkce",
+    "korean", "kor", "japanese", "jap", "chinese", "mandarin", "cantonese",
+    "arabic", "persian", "farsi", "dutch", "swedish", "danish", "norwegian",
+    "finnish", "czech", "hungarian", "greek", "thai", "vietnamese", "indonesian",
+    "ukrainian", "hebrew",
+}
+DUB_TOKENS = {"dubbed", "dub", "multi", "multisub", "dual"}
+ENGLISH_TOKENS = {"english", "eng"}
+# Quality multipliers applied to seeders, so a slightly less-seeded 1080p
+# release beats a DVDRip, and camera rips are a last resort.
+QUALITY_WEIGHTS = (
+    ({"cam", "camrip", "hdcam", "ts", "hdts", "telesync", "tc", "telecine", "hdtc"}, 0.25),
+    ({"dvdscr", "scr", "screener"}, 0.5),
+    ({"dvdrip", "dvd"}, 0.9),
+    ({"1080p"}, 1.25),
+    ({"720p"}, 1.15),
+)
+
+
+def _release_tokens(text):
+    return [t for t in re.split(r"[\W_]+", (text or "").lower()) if t]
+
+
+def _non_title_tokens(file_name, title):
+    """Release-name tokens left after removing one occurrence of each title
+    token, so a film like "The Italian Job" isn't mistaken for an Italian release."""
+    tokens = _release_tokens(file_name)
+    for title_token in _release_tokens(title):
+        if title_token in tokens:
+            tokens.remove(title_token)
+    return tokens
+
+
+def _non_english_reason(file_name, title):
+    tokens = set(_non_title_tokens(file_name, title))
+    if tokens & ENGLISH_TOKENS:
+        return None
+    language = tokens & NON_ENGLISH_TOKENS
+    if language:
+        return f"language tag {sorted(language)}"
+    dub = tokens & DUB_TOKENS
+    if dub:
+        return f"dub tag {sorted(dub)}"
+    return None
+
+
+def _result_score(result, title):
+    seeders = result.get("nbSeeders", 0) or 0
+    tokens = set(_non_title_tokens(result.get("fileName", ""), title))
+    for markers, weight in QUALITY_WEIGHTS:
+        if tokens & markers:
+            return seeders * weight
+    return seeders
+
+
+def _pick_best_result(results, title):
+    """Choose the best English release with at least one seeder, or None.
+
+    Returns None rather than falling back to a foreign or dead release: skipping
+    one movie is better than burning a download slot on the wrong one.
+    """
+    candidates = []
+    for result in results:
+        name = result.get("fileName", "")
+        reason = _non_english_reason(name, title)
+        if reason:
+            print(f"Skipping result for {title}: {name} ({reason})", file=sys.stderr, flush=True)
+        elif (result.get("nbSeeders", 0) or 0) < 1:
+            print(f"Skipping result for {title}: {name} (no seeders)", file=sys.stderr, flush=True)
+        else:
+            candidates.append(result)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda r: _result_score(r, title))
+
+
 def run_search(pattern):
     opener = _build_opener()
     search_id = start_search(opener, pattern)
     all_results = []
     status = "Running"
     while status == "Running":
+        # Results are returned from offset 0 each time, so keep the latest
+        # full list rather than appending duplicates.
         results, status = get_results(opener, search_id)
         if results:
-            all_results.extend(results)
+            all_results = results
         time.sleep(1)
     stop_and_delete_search(opener, search_id)
 
     if not all_results:
-        print(f"No search results for pattern: {pattern}")
+        print(f"No search results for pattern: {pattern}", file=sys.stderr, flush=True)
         return None
 
-    best = max(all_results, key=lambda r: r.get("nbSeeders", 0))
+    best = _pick_best_result(all_results, pattern)
+    if best is None:
+        print(
+            f"No usable English release with seeders among {len(all_results)} results for {pattern}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+
     raw_url = best.get("fileUrl", None)
     resolved = _resolve_search_link(raw_url)
-    print(f"Best result for {pattern}: {best.get('fileName', 'unknown')} ({best.get('nbSeeders', 0)} seeders)")
+    print(f"Best result for {pattern}: {best.get('fileName', 'unknown')} ({best.get('nbSeeders', 0)} seeders)", flush=True)
     return resolved
 
 
