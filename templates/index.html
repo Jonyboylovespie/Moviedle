@@ -160,8 +160,6 @@ legend{font-weight:600;margin-bottom:6px}
 @keyframes pan{to{transform:translate(4%,-3%) scale(1.06);filter:sepia(.35) brightness(1.15)}}
 @keyframes flick{50%{opacity:.4}}
 .runbar{position:absolute;left:0;bottom:0;height:4px;background:var(--amber);box-shadow:0 0 10px var(--amber);z-index:3;width:0}
-.runbar.go{animation:run var(--d,1s) linear infinite}
-@keyframes run{to{width:100%}}
 #clip-label{position:absolute;top:12px;right:12px;z-index:4;font-family:var(--round);font-weight:800;
   background:rgba(28,17,11,.85);color:var(--tungsten);padding:4px 12px;border-radius:999px;box-shadow:0 0 0 1px var(--brass-lo)}
 
@@ -272,7 +270,7 @@ legend{font-weight:600;margin-bottom:6px}
       <div class="screen">
         <div class="intermission" id="intermission"><div><h3>INTERMISSION</h3><p id="inter-sub">Thread a reel, then press Play Game.</p></div></div>
         <div id="game-container" hidden>
-          <video id="game-video" controls autoplay muted playsinline aria-label="Movie clip"></video>
+          <video id="game-video" controls autoplay loop muted playsinline aria-label="Movie clip"></video>
           <div class="runbar" id="runbar"></div>
           <div id="clip-label">Clip 1 / 6</div>
         </div>
@@ -477,6 +475,22 @@ function setLadder() {
     }).join('');
 }
 
+let runbarFrame = 0;
+function tickRunbar() {
+    const d = gameVideo.duration;
+    runbar.style.width = d > 0 ? `${Math.min(gameVideo.currentTime / d, 1) * 100}%` : '0';
+    runbarFrame = requestAnimationFrame(tickRunbar);
+}
+function startRunbar() {
+    cancelAnimationFrame(runbarFrame);
+    runbar.style.width = '0';
+    runbarFrame = requestAnimationFrame(tickRunbar);
+}
+function stopRunbar() {
+    cancelAnimationFrame(runbarFrame);
+    runbar.style.width = '0';
+}
+
 function loadClip(index) {
     const clip = currentClips[index];
     if (!clip) return;
@@ -484,10 +498,7 @@ function loadClip(index) {
     gameVideo.src = `/movies/${encodeURIComponent(currentMovieDir)}/${encodeURIComponent(clip)}`;
     gameVideo.load();
     gameVideo.play().catch(() => {});
-    runbar.classList.remove('go');
-    runbar.style.setProperty('--d', `${index + 1}s`);
-    void runbar.offsetWidth;
-    runbar.classList.add('go');
+    startRunbar();
     setLadder();
 }
 
@@ -536,7 +547,7 @@ playBtn.addEventListener('click', async () => {
 
 function showReveal(won) {
     isGameActive = false;
-    runbar.classList.remove('go');
+    stopRunbar();
     gameVideo.pause();
     closeDropdown();
     feedback.textContent = won ? `Correct! ${currentMovieName}` : `It was ${currentMovieName}`;
