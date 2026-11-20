@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, send_from_directory, request
+from flask import Flask, render_template, jsonify, send_from_directory, request, redirect, abort
 import os
 import random
 import sqlite3
@@ -25,6 +25,13 @@ sys.stdout.reconfigure(line_buffering=True)
 
 app = Flask(__name__)
 
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
+TMDB_POSTER_SIZES = {"w92", "w185", "w342", "w500"}
+# Poster paths looked up from TMDB, keyed by IMDb id: (poster_path or "", time).
+# Hits are kept for the process lifetime; misses are retried after an hour.
+_poster_cache = {}
+_poster_cache_lock = threading.Lock()
+POSTER_MISS_TTL = 3600
 QBITTORRENT_URL = os.getenv("QBITTORRENT_URL", "http://localhost:8080").rstrip("/")
 QBITTORRENT_USERNAME = os.getenv("QBITTORRENT_USERNAME", "")
 QBITTORRENT_PASSWORD = os.getenv("QBITTORRENT_PASSWORD", "")
@@ -393,7 +400,7 @@ def _save_metadata(meta):
                 os.remove(temporary_file)
 
 
-def _add_movie_metadata(sanitized_name, title, year, poster_path, votes=None, rating=None, difficulty=None):
+def _add_movie_metadata(sanitized_name, title, year, poster_path, votes=None, rating=None, difficulty=None, imdb_id=None):
     with metadata_lock:
         meta = _load_metadata()
         entry = {
@@ -408,6 +415,8 @@ def _add_movie_metadata(sanitized_name, title, year, poster_path, votes=None, ra
             entry["rating"] = rating
         if difficulty:
             entry["difficulty"] = difficulty
+        if imdb_id:
+            entry["imdb_id"] = imdb_id
         meta[sanitized_name] = entry
         _save_metadata(meta)
 
@@ -480,6 +489,60 @@ def _open_local_movies_db():
     return connection
 
 
+def _imdb_id(movie_id):
+    """The CS50 database uses IMDb's numeric ids as movie ids."""
+    return f"tt{int(movie_id):07d}"
+
+
+def _imdb_id_for(info):
+    """IMDb id for a metadata entry, looking it up by title/year for entries
+    saved before ids were recorded."""
+    if info.get("imdb_id"):
+        return info["imdb_id"]
+    if not info.get("title") or not _local_db_available():
+        return None
+    with _open_local_movies_db() as connection:
+        row = connection.execute(
+            "SELECT movies.id FROM movies LEFT JOIN ratings ON ratings.movie_id = movies.id "
+            "WHERE movies.title = ? AND (? = '' OR CAST(movies.year AS TEXT) = ?) "
+            "ORDER BY ratings.votes DESC LIMIT 1",
+            (info["title"], str(info.get("year") or ""), str(info.get("year") or "")),
+        ).fetchone()
+    return _imdb_id(row["id"]) if row else None
+
+
+def _tmdb_poster_path(imdb_id):
+    """TMDB poster path for an IMDb id, or "" if there is none or TMDB is unreachable."""
+    if not TMDB_API_KEY:
+        return ""
+    now = time.time()
+    with _poster_cache_lock:
+        cached = _poster_cache.get(imdb_id)
+    if cached and (cached[0] or now - cached[1] < POSTER_MISS_TTL):
+        return cached[0]
+
+    url = f"https://api.themoviedb.org/3/find/{urllib.parse.quote(imdb_id)}?" + urllib.parse.urlencode(
+        {"api_key": TMDB_API_KEY, "external_source": "imdb_id"}
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            data = json.load(response)
+    except (OSError, ValueError) as exc:
+        # Transient failure: don't cache, so the next request retries.
+        print(f"TMDB poster lookup failed for {imdb_id}: {exc}", file=sys.stderr, flush=True)
+        return ""
+    results = data.get("movie_results") or []
+    path = (results[0].get("poster_path") or "") if results else ""
+    with _poster_cache_lock:
+        _poster_cache[imdb_id] = (path, now)
+    return path
+
+
+def _poster_url(info, size="w500"):
+    imdb_id = _imdb_id_for(info)
+    return f"/poster/{imdb_id}?size={size}" if imdb_id else ""
+
+
 def _pick_movies_not_downloaded(count, difficulties=None):
     """Pick *count* random movies for each requested vote-count difficulty."""
     if difficulties is None:
@@ -501,7 +564,7 @@ def _pick_movies_not_downloaded(count, difficulties=None):
     picked = []
 
     query = (
-        "SELECT movies.title, movies.year, ratings.rating, ratings.votes "
+        "SELECT movies.id, movies.title, movies.year, ratings.rating, ratings.votes "
         "FROM movies JOIN ratings ON ratings.movie_id = movies.id "
         "WHERE ratings.votes >= ? AND (? IS NULL OR ratings.votes < ?) "
         "ORDER BY RANDOM()"
@@ -528,6 +591,7 @@ def _pick_movies_not_downloaded(count, difficulties=None):
                     "title": title,
                     "year": year,
                     "poster_path": "",
+                    "imdb_id": _imdb_id(row["id"]),
                     "votes": int(row["votes"]),
                     "rating": row["rating"],
                     "difficulty": difficulty,
@@ -794,6 +858,7 @@ def _download_worker():
                     votes=job.get("votes"),
                     rating=job.get("rating"),
                     difficulty=job.get("difficulty"),
+                    imdb_id=job.get("imdb_id"),
                 ),
             )
             if success:
@@ -954,7 +1019,6 @@ def game_start():
         "movie_dir": movie_dir,
         "clips": clips,
         "movie_name": info.get("display_name", movie_dir),
-        "poster_path": info.get("poster_path", ""),
         "difficulty": info.get("difficulty") or _difficulty_for_votes(info.get("votes")),
     })
 
@@ -977,7 +1041,7 @@ def game_guess():
 
     if correct:
         _delete_movie(movie_dir)
-        return jsonify({"correct": True, "movie_name": info["display_name"], "poster_path": info.get("poster_path", "")})
+        return jsonify({"correct": True, "movie_name": info["display_name"], "poster_url": _poster_url(info)})
     return jsonify({"correct": False})
 
 
@@ -995,9 +1059,25 @@ def game_reveal():
         return jsonify({"error": "Movie not found"}), 404
 
     movie_name = info["display_name"]
-    poster_path = info.get("poster_path", "")
+    poster_url = _poster_url(info)
     _delete_movie(movie_dir)
-    return jsonify({"movie_name": movie_name, "poster_path": poster_path})
+    return jsonify({"movie_name": movie_name, "poster_url": poster_url})
+
+
+@app.route('/poster/<imdb_id>')
+def poster(imdb_id):
+    """Redirect to the TMDB poster image for an IMDb id, or 404 if none."""
+    if not re.fullmatch(r"tt\d{7,10}", imdb_id):
+        abort(404)
+    size = request.args.get("size", "w185")
+    if size not in TMDB_POSTER_SIZES:
+        size = "w185"
+    path = _tmdb_poster_path(imdb_id)
+    if not path:
+        abort(404)
+    response = redirect(f"https://image.tmdb.org/t/p/{size}{path}")
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @app.route('/search-movies')
@@ -1017,7 +1097,7 @@ def search_movies():
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     min_votes = min(low for low, _ in DIFFICULTY_BANDS.values())
     sql = (
-        "SELECT movies.title, movies.year FROM ratings "
+        "SELECT movies.id, movies.title, movies.year FROM ratings "
         "JOIN movies ON movies.id = ratings.movie_id "
         "WHERE ratings.votes >= ? AND movies.title LIKE ? ESCAPE '\\' "
         "AND (? = '' OR CAST(movies.year AS TEXT) LIKE ?) "
@@ -1033,7 +1113,7 @@ def search_movies():
     for row in rows:
         year = str(row["year"]) if row["year"] is not None else ""
         display_name = f"{row['title']} ({year})" if year else row["title"]
-        movies.append({"display_name": display_name})
+        movies.append({"display_name": display_name, "imdb_id": _imdb_id(row["id"])})
     return jsonify(movies)
 
 

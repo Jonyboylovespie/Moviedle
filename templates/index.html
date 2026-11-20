@@ -225,6 +225,9 @@ legend{font-weight:600;margin-bottom:6px}
   aspect-ratio:auto;border-radius:3px;background:none;color:#7a2c18;font:800 .62rem/1.15 var(--round);letter-spacing:.12em;text-align:center;
   padding:3px 5px;border:2px solid #7a2c18;margin-top:24px}
 #reveal-poster.none::after{display:none}
+#reveal-poster.has-poster{background-size:cover;background-position:center}
+#reveal-poster.has-poster::before,#reveal-poster.has-poster::after{display:none}
+.thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1}
 .reveal-meta small{display:block;color:var(--brass-hi);letter-spacing:.2em;text-transform:uppercase;font-size:.75rem;font-weight:700}
 #reveal-title{margin:4px 0 4px;font-family:var(--round);font-size:clamp(1.4rem,3vw,2.1rem);color:var(--tungsten)}
 .reveal-meta p{margin:0 0 14px;color:var(--muted)}
@@ -308,7 +311,6 @@ legend{font-weight:600;margin-bottom:6px}
           <div class="reveal-meta">
             <small id="reveal-kicker">Tonight's feature</small>
             <h3 id="reveal-title">Inception</h3>
-            <p id="reveal-note">2010 · Easy reel</p>
             <button id="next-btn" class="btn">Next Movie &#8594;</button>
           </div>
         </div>
@@ -347,7 +349,6 @@ const revealArea = $('reveal-area');
 const revealTitle = $('reveal-title');
 const revealPoster = $('reveal-poster');
 const revealKicker = $('reveal-kicker');
-const revealNote = $('reveal-note');
 const nextBtn = $('next-btn');
 const statusDot = $('status-dot');
 const countText = $('count-text');
@@ -381,7 +382,7 @@ faviconImage.onload = () => {
 let currentMovieDir = '';
 let currentClips = [];
 let currentMovieName = '';
-let currentPosterPath = '';
+let currentPosterUrl = '';
 let attempt = 0;
 let isGameActive = false;
 let searchTimeout = null;
@@ -545,9 +546,34 @@ function loadClip(index) {
 
 function resetReveal() {
     revealArea.hidden = true;
-    revealPoster.classList.remove('none');
+    revealPoster.classList.remove('none', 'has-poster');
     revealPoster.style.backgroundImage = '';
     revealPoster.setAttribute('aria-label', 'Movie poster');
+}
+
+let posterRequest = 0;
+function showRevealPoster(url, movieName) {
+    const requestId = ++posterRequest;
+    revealPoster.classList.remove('none', 'has-poster');
+    revealPoster.style.backgroundImage = '';
+    const showMissing = () => {
+        if (requestId !== posterRequest) return;
+        revealPoster.classList.add('none');
+        revealPoster.setAttribute('aria-label', 'No poster available');
+    };
+    if (!url) {
+        showMissing();
+        return;
+    }
+    revealPoster.setAttribute('aria-label', `Poster for ${movieName}`);
+    const image = new Image();
+    image.onload = () => {
+        if (requestId !== posterRequest) return;
+        revealPoster.style.backgroundImage = `url("${image.src}")`;
+        revealPoster.classList.add('has-poster');
+    };
+    image.onerror = showMissing;
+    image.src = url;
 }
 
 function startGame(data) {
@@ -558,7 +584,7 @@ function startGame(data) {
     difficultyBadge.textContent = difficulty;
     difficultyBadge.className = difficulty;
     difficultyBadge.hidden = !difficulty;
-    currentPosterPath = data.poster_path || '';
+    currentPosterUrl = '';
     attempt = 0;
     isGameActive = true;
     intermission.hidden = true;
@@ -599,16 +625,7 @@ function showReveal(won) {
     feedback.className = won ? 'good' : 'bad';
     revealKicker.textContent = won ? `Solved on clip ${attempt + 1} of 6` : 'Reel ended · revealed';
     revealTitle.textContent = currentMovieName;
-    revealNote.textContent = currentPosterPath ? 'Poster from the movie catalogue' : 'Poster not on file · film can archived';
-    if (currentPosterPath) {
-        revealPoster.classList.remove('none');
-        revealPoster.style.backgroundImage = `url("https://image.tmdb.org/t/p/w500${currentPosterPath}")`;
-        revealPoster.setAttribute('aria-label', `Poster for ${currentMovieName}`);
-    } else {
-        revealPoster.classList.add('none');
-        revealPoster.style.backgroundImage = '';
-        revealPoster.setAttribute('aria-label', 'No poster available');
-    }
+    showRevealPoster(currentPosterUrl, currentMovieName);
     revealArea.hidden = false;
     guessInput.disabled = true;
     guessBtn.disabled = true;
@@ -630,7 +647,7 @@ async function revealMovie() {
             return;
         }
         currentMovieName = data.movie_name || currentMovieName;
-        currentPosterPath = data.poster_path || '';
+        currentPosterUrl = data.poster_url || '';
         showReveal(false);
         updateMovieCount();
     } catch (error) {
@@ -651,7 +668,7 @@ async function submitGuess() {
         const data = await response.json();
         if (data.correct) {
             currentMovieName = data.movie_name || currentMovieName;
-            currentPosterPath = data.poster_path || '';
+            currentPosterUrl = data.poster_url || '';
             showReveal(true);
             updateMovieCount();
             return;
@@ -727,6 +744,14 @@ guessInput.addEventListener('input', () => {
                 const thumb = document.createElement('span');
                 thumb.className = 'thumb';
                 thumb.style.setProperty('--t', titleHue(movie.display_name));
+                if (movie.imdb_id) {
+                    const img = document.createElement('img');
+                    img.alt = '';
+                    img.loading = 'lazy';
+                    img.addEventListener('error', () => img.remove());
+                    img.src = `/poster/${encodeURIComponent(movie.imdb_id)}?size=w92`;
+                    thumb.append(img);
+                }
                 const label = document.createElement('span');
                 label.textContent = movie.display_name;
                 item.append(thumb, label);
