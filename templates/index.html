@@ -117,15 +117,14 @@ legend{font-weight:600;margin-bottom:6px}
 /* ---------- Booth / screen ---------- */
 .booth{position:relative;padding:26px 26px 22px 26px;border-radius:28px;overflow:hidden;
   background:radial-gradient(ellipse at 10% 0%,#3a2416,#1a0f09 70%);box-shadow:0 0 0 1px rgba(209,169,84,.3),0 18px 40px rgba(0,0,0,.55)}
-.projector{position:absolute;left:-6px;top:-6px;width:92px;height:70px;border-radius:0 0 30px 0;z-index:3;
+.projector{position:absolute;left:16px;top:16px;width:82px;height:62px;border-radius:12px 12px 22px 12px;z-index:3;
   background:linear-gradient(160deg,var(--walnut-3),#1a0f09);box-shadow:0 0 0 1px var(--brass-lo)}
-.projector .reel{position:absolute;--s:40px;top:-10px;left:14px}
-.projector i{position:absolute;right:6px;bottom:8px;width:16px;height:16px;border-radius:50%;
+.projector .reel{position:absolute;--s:36px;top:8px;left:10px}
+.projector i{position:absolute;right:-5px;bottom:14px;width:13px;height:13px;border-radius:50%;
   background:radial-gradient(circle,#fff6dc,var(--amber) 50%,#6b3b0c);box-shadow:0 0 18px 6px rgba(255,190,90,.55)}
-.beam{position:absolute;left:70px;top:46px;width:130%;height:130%;z-index:1;pointer-events:none;
-  transform-origin:0 0;
-  background:conic-gradient(from 96deg at 0 0,transparent 0deg,rgba(255,214,140,.16) 6deg,rgba(255,226,168,.22) 22deg,rgba(255,214,140,.12) 40deg,transparent 46deg);
-  filter:blur(2px);mix-blend-mode:screen}
+.beam{position:absolute;left:92px;top:65px;width:calc(100% - 104px);height:calc(100% - 80px);z-index:1;pointer-events:none;
+  background:linear-gradient(105deg,rgba(255,226,168,.2),rgba(255,214,140,.08) 38%,transparent 72%);
+  clip-path:polygon(0 0,100% 9%,100% 56%,0 0);filter:blur(3px);mix-blend-mode:screen}
 .motes{position:absolute;inset:0;z-index:2;pointer-events:none;
   background-image:
    radial-gradient(1.5px 1.5px at 20% 30%,rgba(255,240,200,.8),transparent),
