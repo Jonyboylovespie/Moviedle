@@ -161,8 +161,14 @@ legend{font-weight:600;margin-bottom:6px}
 @keyframes pan{to{transform:translate(4%,-3%) scale(1.06);filter:sepia(.35) brightness(1.15)}}
 @keyframes flick{50%{opacity:.4}}
 .runbar{position:absolute;left:0;bottom:0;height:4px;background:var(--amber);box-shadow:0 0 10px var(--amber);z-index:3;width:0}
-#clip-label{position:absolute;top:12px;right:12px;z-index:4;font-family:var(--round);font-weight:800;
+.screen-tags{position:absolute;top:12px;right:12px;z-index:4;display:flex;gap:8px}
+.screen-tags>*{font-family:var(--round);font-weight:800;
   background:rgba(28,17,11,.85);color:var(--tungsten);padding:4px 12px;border-radius:999px;box-shadow:0 0 0 1px var(--brass-lo)}
+#difficulty-badge{text-transform:uppercase;letter-spacing:.12em;font-size:.85rem;display:flex;align-items:center}
+#difficulty-badge[hidden]{display:none}
+#difficulty-badge.easy{color:#9fdc8a;box-shadow:0 0 0 1px rgba(159,220,138,.55)}
+#difficulty-badge.medium{color:var(--tungsten);box-shadow:0 0 0 1px rgba(255,178,74,.6)}
+#difficulty-badge.hard{color:#ff8a6b;box-shadow:0 0 0 1px rgba(255,138,107,.6)}
 
 /* clip ladder: film strip */
 .ladder{display:grid;grid-template-columns:repeat(6,1fr);gap:0;margin:18px 0 6px;padding:10px 8px;list-style:none;border-radius:10px;
@@ -275,7 +281,10 @@ legend{font-weight:600;margin-bottom:6px}
         <div id="game-container" hidden>
           <video id="game-video" controls autoplay loop muted playsinline aria-label="Movie clip"></video>
           <div class="runbar" id="runbar"></div>
-          <div id="clip-label">Clip 1 / 6</div>
+          <div class="screen-tags">
+            <span id="difficulty-badge" hidden></span>
+            <div id="clip-label">Clip 1 / 6</div>
+          </div>
         </div>
       </div>
 
@@ -325,6 +334,7 @@ const gameUi = $('game-ui');
 const intermission = $('intermission');
 const gameVideo = $('game-video');
 const clipLabel = $('clip-label');
+const difficultyBadge = $('difficulty-badge');
 const runbar = $('runbar');
 const ladderEl = $('ladder');
 const searchContainer = $('search-container');
@@ -468,6 +478,34 @@ downloadBtn.addEventListener('click', queueMovies);
 function closeDropdown() {
     autofillDropdown.hidden = true;
     guessInput.setAttribute('aria-expanded', 'false');
+    guessInput.removeAttribute('aria-activedescendant');
+}
+
+function dropdownOptions() {
+    return autofillDropdown.hidden ? [] : [...autofillDropdown.querySelectorAll('li')];
+}
+
+function highlightOption(index) {
+    const options = dropdownOptions();
+    options.forEach((option, i) => option.setAttribute('aria-selected', String(i === index)));
+    if (options[index]) {
+        guessInput.setAttribute('aria-activedescendant', options[index].id);
+        options[index].scrollIntoView({block: 'nearest'});
+    } else {
+        guessInput.removeAttribute('aria-activedescendant');
+    }
+}
+
+function pickOption(option) {
+    guessInput.value = option.dataset.name;
+    closeDropdown();
+    guessInput.focus();
+}
+
+function titleHue(text) {
+    let hash = 0;
+    for (const char of text) hash = (hash * 31 + char.charCodeAt(0)) % 360;
+    return hash;
 }
 
 function setLadder() {
@@ -516,6 +554,10 @@ function startGame(data) {
     currentMovieDir = data.movie_dir;
     currentClips = data.clips || [1, 2, 3, 4, 5, 6].map((second) => `${second}s.mp4`);
     currentMovieName = data.movie_name || '';
+    const difficulty = ['easy', 'medium', 'hard'].includes(data.difficulty) ? data.difficulty : '';
+    difficultyBadge.textContent = difficulty;
+    difficultyBadge.className = difficulty;
+    difficultyBadge.hidden = !difficulty;
     currentPosterPath = data.poster_path || '';
     attempt = 0;
     isGameActive = true;
@@ -632,45 +674,74 @@ async function submitGuess() {
 guessBtn.addEventListener('click', submitGuess);
 giveUpBtn.addEventListener('click', revealMovie);
 guessInput.addEventListener('keydown', (event) => {
+    const options = dropdownOptions();
+    const current = options.findIndex((option) => option.getAttribute('aria-selected') === 'true');
+    if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && options.length) {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        highlightOption((current + step + options.length) % options.length);
+        return;
+    }
+    if (event.key === 'Tab' && options.length && !event.shiftKey) {
+        event.preventDefault();
+        pickOption(options[Math.max(current, 0)]);
+        return;
+    }
     if (event.key === 'Enter') {
         event.preventDefault();
+        if (current >= 0) {
+            pickOption(options[current]);
+            return;
+        }
         closeDropdown();
         submitGuess();
     }
     if (event.key === 'Escape') closeDropdown();
 });
 
+let searchRequest = 0;
 guessInput.addEventListener('input', () => {
     const value = guessInput.value.trim();
+    clearTimeout(searchTimeout);
+    const requestId = ++searchRequest;
     if (!value || !isGameActive) {
         closeDropdown();
         return;
     }
-    clearTimeout(searchTimeout);
     searchTimeout = setTimeout(async () => {
         try {
             const response = await fetch(`/search-movies?q=${encodeURIComponent(value)}`);
-            const movies = await response.json();
-            if (!movies.length) {
+            const movies = response.ok ? await response.json() : [];
+            // Ignore responses for text the player has already changed.
+            if (requestId !== searchRequest || !isGameActive) return;
+            if (!Array.isArray(movies) || !movies.length) {
                 closeDropdown();
                 return;
             }
-            autofillDropdown.innerHTML = movies.map((movie) => {
-                const poster = movie.poster_path ? `https://image.tmdb.org/t/p/w92${movie.poster_path}` : '';
-                return `<li role="option" data-name="${movie.display_name.replace(/"/g, '&quot;')}"><span class="thumb" style="${poster ? `background-image:url('${poster}')` : ''}"></span><span>${movie.display_name}</span></li>`;
-            }).join('');
+            autofillDropdown.replaceChildren(...movies.map((movie, index) => {
+                const item = document.createElement('li');
+                item.id = `autofill-option-${index}`;
+                item.setAttribute('role', 'option');
+                item.setAttribute('aria-selected', 'false');
+                item.dataset.name = movie.display_name;
+                const thumb = document.createElement('span');
+                thumb.className = 'thumb';
+                thumb.style.setProperty('--t', titleHue(movie.display_name));
+                const label = document.createElement('span');
+                label.textContent = movie.display_name;
+                item.append(thumb, label);
+                item.addEventListener('mousedown', (event) => {
+                    event.preventDefault();
+                    pickOption(item);
+                });
+                return item;
+            }));
             autofillDropdown.hidden = false;
             guessInput.setAttribute('aria-expanded', 'true');
-            autofillDropdown.querySelectorAll('li').forEach((item) => item.addEventListener('mousedown', (event) => {
-                event.preventDefault();
-                guessInput.value = item.dataset.name;
-                closeDropdown();
-                guessInput.focus();
-            }));
         } catch (error) {
-            closeDropdown();
+            if (requestId === searchRequest) closeDropdown();
         }
-    }, 300);
+    }, 200);
 });
 
 document.addEventListener('click', (event) => {

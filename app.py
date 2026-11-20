@@ -1,5 +1,4 @@
 from flask import Flask, render_template, jsonify, send_from_directory, request
-import requests
 import os
 import random
 import sqlite3
@@ -22,8 +21,6 @@ load_dotenv()
 
 app = Flask(__name__)
 
-TMDB_API_KEY = os.getenv('TMDB_API_KEY')
-TMDB_BASE_URL = "https://api.themoviedb.org/3"
 QBITTORRENT_URL = os.getenv("QBITTORRENT_URL", "http://localhost:8080").rstrip("/")
 QBITTORRENT_USERNAME = os.getenv("QBITTORRENT_USERNAME", "")
 QBITTORRENT_PASSWORD = os.getenv("QBITTORRENT_PASSWORD", "")
@@ -42,6 +39,18 @@ DIFFICULTY_BANDS = {
     "medium": (250_000, 500_000),
     "easy": (500_000, None),
 }
+
+
+
+def _difficulty_for_votes(votes):
+    """Map a vote count to its difficulty band, or None if it fits none."""
+    if not isinstance(votes, int):
+        return None
+    for name, (low, high) in DIFFICULTY_BANDS.items():
+        if votes >= low and (high is None or votes < high):
+            return name
+    return None
+
 
 # Disk-space thresholds (bytes)
 MIN_FREE_DOWNLOAD = 5 * 1024 ** 3   # 5 GB before starting a download
@@ -845,6 +854,7 @@ def game_start():
         "clips": clips,
         "movie_name": info.get("display_name", movie_dir),
         "poster_path": info.get("poster_path", ""),
+        "difficulty": info.get("difficulty") or _difficulty_for_votes(info.get("votes")),
     })
 
 
@@ -891,40 +901,39 @@ def game_reveal():
 
 @app.route('/search-movies')
 def search_movies():
-    if not TMDB_API_KEY:
-        return jsonify({"error": "TMDB_API_KEY not configured."}), 500
-
-    query = request.args.get('q', '')
-    if not query:
+    """Suggest titles from the local database, in the same "Title (Year)" form
+    the game checks guesses against. Only titles from the playable vote pool
+    are suggested, since nothing else can be an answer."""
+    query = request.args.get('q', '').strip()
+    # Allow typing a picked suggestion back in, e.g. "Inception (20".
+    match = re.match(r"^(.*?)\s*\((\d{0,4})\)?$", query)
+    year_prefix = ""
+    if match and match.group(1):
+        query, year_prefix = match.group(1), match.group(2)
+    if not query or not _local_db_available():
         return jsonify([])
 
-    url = f"{TMDB_BASE_URL}/search/movie"
-    params = {
-        "api_key": TMDB_API_KEY,
-        "query": query,
-        "include_adult": "false",
-        "language": "en-US",
-    }
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    min_votes = min(low for low, _ in DIFFICULTY_BANDS.values())
+    sql = (
+        "SELECT movies.title, movies.year FROM ratings "
+        "JOIN movies ON movies.id = ratings.movie_id "
+        "WHERE ratings.votes >= ? AND movies.title LIKE ? ESCAPE '\\' "
+        "AND (? = '' OR CAST(movies.year AS TEXT) LIKE ?) "
+        "ORDER BY (movies.title LIKE ? ESCAPE '\\') DESC, ratings.votes DESC "
+        "LIMIT 10"
+    )
+    with _open_local_movies_db() as connection:
+        rows = connection.execute(
+            sql, (min_votes, f"%{escaped}%", year_prefix, f"{year_prefix}%", f"{escaped}%")
+        ).fetchall()
 
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        results = data.get("results", [])
-
-        movies = []
-        for movie in results[:10]:
-            title = movie.get("title", "")
-            release_date = movie.get("release_date", "")
-            year = release_date[:4] if release_date and len(release_date) >= 4 else ""
-            display_name = f"{title} ({year})" if year else title
-            movies.append({
-                "display_name": display_name,
-                "poster_path": movie.get("poster_path"),
-            })
-        return jsonify(movies)
-    except requests.RequestException:
-        return jsonify([])
+    movies = []
+    for row in rows:
+        year = str(row["year"]) if row["year"] is not None else ""
+        display_name = f"{row['title']} ({year})" if year else row["title"]
+        movies.append({"display_name": display_name})
+    return jsonify(movies)
 
 
 @app.route('/disk-status')
