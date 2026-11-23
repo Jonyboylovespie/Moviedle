@@ -12,17 +12,21 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
+# Never start real downloads from tests.
+os.environ["AUTO_DOWNLOAD"] = "0"
 
-import app  # noqa: E402  (starts idle daemon workers; harmless here)
+import app  # noqa: E402
 
 HAVE_FFMPEG = shutil.which("ffmpeg") and shutil.which("ffprobe")
 CHROME = next((shutil.which(name) for name in ("google-chrome", "chromium-browser", "chromium") if shutil.which(name)), None)
@@ -233,6 +237,84 @@ class GameRoundTests(GameTestCase):
 
 
 @unittest.skipUnless(HAVE_FFMPEG and CHROME and NODE, "needs ffmpeg, node and Chrome")
+class AutoDownloadTests(GameTestCase):
+    """The workers' choice of what to download next and whether it fits."""
+
+    GB = 1024 ** 3
+
+    def setUp(self):
+        super().setUp()
+        app.active_downloads.clear()
+        app.skipped_movies.clear()
+        self.addCleanup(app.active_downloads.clear)
+        self.addCleanup(app.skipped_movies.clear)
+        db = os.path.join(self.tmp, "movies.db")
+        with contextlib.closing(sqlite3.connect(db)) as connection, connection:
+            connection.executescript(
+                "CREATE TABLE movies (id INTEGER PRIMARY KEY, title TEXT, year NUMERIC);"
+                "CREATE TABLE ratings (movie_id INTEGER, rating REAL, votes INTEGER);")
+            for movie_id, (title, votes) in enumerate([
+                ("Easy One", 900_000), ("Easy Two", 800_000),
+                ("Medium One", 300_000), ("Medium Two", 300_000),
+                ("Hard One", 150_000), ("Hard Two", 150_000),
+            ], start=1):
+                connection.execute("INSERT INTO movies VALUES (?, ?, 2000)", (movie_id, title))
+                connection.execute("INSERT INTO ratings VALUES (?, 7.0, ?)", (movie_id, votes))
+        saved_db = app.MOVIES_DB_FILE
+        app.MOVIES_DB_FILE = db
+        self.addCleanup(setattr, app, "MOVIES_DB_FILE", saved_db)
+
+    def test_picks_the_least_stocked_difficulty(self):
+        add_movie(self.tmp, "Easy One (2000)", "easy")
+        add_movie(self.tmp, "Hard One (2000)", "hard")
+        app.active_downloads["Medium One (2000)"] = {"difficulty": "medium", "outstanding": 0}
+        # Easy, medium (in progress) and hard each have one, so any may come
+        # next; after that the remaining two bands must be filled first.
+        first = app._claim_next_movie()
+        second = app._claim_next_movie()
+        third = app._claim_next_movie()
+        self.assertEqual(len({first["difficulty"], second["difficulty"], third["difficulty"]}), 3)
+        self.assertEqual(set(app.active_downloads), {
+            "Medium One (2000)", *(m["display_name"] for m in (first, second, third))})
+
+    def test_skips_saved_active_and_failed_movies_and_exhausted_bands(self):
+        add_movie(self.tmp, "Easy One (2000)", "easy")
+        app.active_downloads["Easy Two (2000)"] = {"difficulty": "easy", "outstanding": 0}
+        app.skipped_movies["Hard One (2000)"] = time.time()
+        picked = [app._claim_next_movie() for _ in range(3)]
+        self.assertEqual(sorted(m["display_name"] for m in picked),
+                         ["Hard Two (2000)", "Medium One (2000)", "Medium Two (2000)"])
+        self.assertIsNone(app._claim_next_movie())
+
+    def test_failed_movie_is_retried_after_a_day(self):
+        for name in ("Easy One", "Easy Two", "Medium One", "Medium Two", "Hard One"):
+            app.skipped_movies[f"{name} (2000)"] = time.time()
+        app.skipped_movies["Hard Two (2000)"] = time.time() - app.SKIP_TTL - 1
+        self.assertEqual(app._claim_next_movie()["display_name"], "Hard Two (2000)")
+
+    def test_downloads_only_fit_above_the_disk_reserve(self):
+        app.active_downloads["Other (2000)"] = {"difficulty": "easy", "outstanding": 3 * self.GB}
+        app.active_downloads["New (2000)"] = {"difficulty": "hard", "outstanding": 0}
+        free = 10 * self.GB
+        with unittest.mock.patch.object(app, "_get_free_space", lambda path: free), \
+                unittest.mock.patch.object(app, "DISK_RESERVE", 5 * self.GB):
+            self.assertFalse(app._claim_space("New (2000)", 2.5 * self.GB))
+            self.assertTrue(app._claim_space("New (2000)", 2 * self.GB))
+            self.assertEqual(app.active_downloads["New (2000)"]["outstanding"], 2 * self.GB)
+            # Everything left (10 - 3 - 2 = 5 GB) is reserve, so no new download starts.
+            self.assertFalse(app._has_room_for_download())
+            app.active_downloads["Other (2000)"]["outstanding"] = 0
+            self.assertTrue(app._has_room_for_download())
+
+    def test_movie_count_reports_downloads_by_difficulty(self):
+        app.active_downloads["Hard One (2000)"] = {"difficulty": "hard", "outstanding": 0}
+        data = self.client.get("/movie-count").get_json()
+        self.assertEqual(data["downloading"], 1)
+        self.assertEqual(data["downloading_by_difficulty"], {"hard": 1, "medium": 0, "easy": 0})
+        self.assertNotIn("queued", data)
+        self.assertEqual(self.client.post("/download-movies", json={"count": 1}).status_code, 404)
+
+
 class BrowserTests(GameTestCase):
     """Load the real page in headless Chrome and measure the player."""
 

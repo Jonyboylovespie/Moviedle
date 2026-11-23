@@ -15,7 +15,6 @@ import threading
 import re
 import unicodedata
 import uuid
-from queue import Queue
 import shutil
 
 load_dotenv()
@@ -64,25 +63,46 @@ def _difficulty_for_votes(votes):
     return None
 
 
-# Disk-space thresholds (bytes)
-MIN_FREE_DOWNLOAD = 5 * 1024 ** 3   # 5 GB before starting a download
+def _env_float(name, default):
+    try:
+        return max(0.0, float(os.getenv(name, default)))
+    except ValueError:
+        return float(default)
+
+
+# Free space the downloader always leaves on the disk. A torrent only starts
+# if it fits on top of this reserve (counting what running downloads still
+# need), so the library grows until the disk is nearly full and refills as
+# played movies are deleted.
+DISK_RESERVE = int(_env_float("DISK_RESERVE_GB", 5) * 1024 ** 3)
 MIN_FREE_ENCODE = 2 * 1024 ** 3     # 2 GB before running ffmpeg
 CRITICAL_FREE = 1 * 1024 ** 3       # 1 GB -> abort active download immediately
+# Assumed size of a release whose size the indexer didn't report.
+UNKNOWN_RELEASE_BYTES = 4 * 1024 ** 3
 
-# Three workers keeps the queue moving while limiting simultaneous torrent and
-# ffmpeg resource usage. Set DOWNLOAD_WORKERS to tune this for the host.
+# Workers download continuously while there is room. Three keeps the library
+# filling while limiting simultaneous torrent and ffmpeg load.
 try:
     DOWNLOAD_WORKERS = max(1, min(int(os.getenv("DOWNLOAD_WORKERS", "3")), 8))
 except ValueError:
     DOWNLOAD_WORKERS = 3
+# Set AUTO_DOWNLOAD=0 to run the game without downloading anything (tests).
+AUTO_DOWNLOAD = os.getenv("AUTO_DOWNLOAD", "1").strip().lower() not in ("0", "false", "no", "off")
+
+SPACE_POLL = 60          # seconds between checks while the disk is full
+IDLE_POLL = 600          # seconds to wait when no movie is left to download
+SKIP_TTL = 24 * 3600     # a movie that failed is not retried for this long
+MAX_ERROR_BACKOFF = 600  # cap on the wait after errors (e.g. qBittorrent down)
 
 # ---------------------------------------------------------------------------
-# Thread-safe download queue / state
+# Download state
 # ---------------------------------------------------------------------------
 
-download_queue = Queue()
-active_downloads = set()
+# sanitized name -> {"difficulty": str, "outstanding": bytes still to download}
+active_downloads = {}
 active_downloads_lock = threading.Lock()
+# sanitized name -> time it failed; skipped by the picker until SKIP_TTL passes
+skipped_movies = {}
 metadata_lock = threading.RLock()
 selection_lock = threading.Lock()
 
@@ -375,7 +395,10 @@ def _search_all(opener, query):
 
 
 def run_search(display_name):
-    """Find a torrent link for "Title (Year)", or None if no suitable release."""
+    """Find a torrent for "Title (Year)".
+
+    Returns ``(link, size_bytes)``, or ``(None, 0)`` if no suitable release.
+    """
     title, year = _split_display_name(display_name)
     opener = _build_opener()
     for query in _search_queries(title):
@@ -384,14 +407,19 @@ def run_search(display_name):
         best = _pick_best_result(results, title, year)
         if best is not None:
             raw_url = best.get("fileUrl", None)
+            size = best.get("fileSize", -1)
+            if not isinstance(size, (int, float)) or size <= 0:
+                size = UNKNOWN_RELEASE_BYTES
             print(
                 f"Best result for {display_name}: {best.get('fileName', 'unknown')} "
-                f"({best.get('nbSeeders', 0)} seeders)",
+                f"({best.get('nbSeeders', 0)} seeders, {size / 1024 ** 3:.1f} GB)",
                 flush=True,
             )
-            return _resolve_search_link(raw_url)
+            link = _resolve_search_link(raw_url)
+            if link:
+                return link, int(size)
     print(f"No usable English release with seeders found for {display_name}", file=sys.stderr, flush=True)
-    return None
+    return None, 0
 
 
 def _get_free_space(path):
@@ -882,91 +910,132 @@ def _poster_url(info, size="w500"):
     return f"/poster/{imdb_id}?size={size}" if imdb_id else ""
 
 
-def _pick_movies_not_downloaded(count, difficulties=None):
-    """Pick *count* random movies for each requested vote-count difficulty."""
-    if difficulties is None:
-        difficulties = list(DIFFICULTY_BANDS)
-
-    downloaded = _get_downloaded_movies()
-    with active_downloads_lock:
-        in_progress = set(active_downloads)
-    # Jobs waiting in the queue have not reached ``active_downloads`` yet, so
-    # include them while selecting the next batch to avoid duplicate downloads.
-    with download_queue.mutex:
-        queued = {
-            _sanitize_dirname(job.get("display_name", ""))
-            for job in list(download_queue.queue)
-            if isinstance(job, dict) and job.get("display_name")
-        }
-    excluded = downloaded | in_progress | queued
-
-    picked = []
-
-    query = (
+def _pick_movie(connection, difficulty, excluded):
+    """A random movie from *difficulty*'s vote band not in *excluded*, or None."""
+    lower, upper = DIFFICULTY_BANDS[difficulty]
+    rows = connection.execute(
         "SELECT movies.id, movies.title, movies.year, ratings.rating, ratings.votes "
         "FROM movies JOIN ratings ON ratings.movie_id = movies.id "
         "WHERE ratings.votes >= ? AND (? IS NULL OR ratings.votes < ?) "
-        "ORDER BY RANDOM()"
+        "ORDER BY RANDOM()",
+        (lower, upper, upper),
     )
+    for row in rows:
+        title = row["title"] or ""
+        if not title:
+            continue
+        year = str(row["year"]) if row["year"] is not None else ""
+        display_name = f"{title} ({year})" if year else title
+        if _sanitize_dirname(display_name) in excluded:
+            continue
+        return {
+            "display_name": display_name,
+            "title": title,
+            "year": year,
+            "poster_path": "",
+            "imdb_id": _imdb_id(row["id"]),
+            "votes": int(row["votes"]),
+            "rating": row["rating"],
+            "difficulty": difficulty,
+        }
+    return None
 
-    with _open_local_movies_db() as connection:
-        for difficulty in difficulties:
-            lower, upper = DIFFICULTY_BANDS[difficulty]
-            rows = connection.execute(query, (lower, upper, upper)).fetchall()
-            candidates = []
-            seen = set()
-            for row in rows:
-                title = row["title"] or ""
-                year = str(row["year"]) if row["year"] is not None else ""
-                if not title:
-                    continue
-                display_name = f"{title} ({year})" if year else title
-                sanitized = _sanitize_dirname(display_name)
-                if sanitized in excluded or sanitized in seen:
-                    continue
-                seen.add(sanitized)
-                candidates.append({
-                    "display_name": display_name,
-                    "title": title,
-                    "year": year,
-                    "poster_path": "",
-                    "imdb_id": _imdb_id(row["id"]),
-                    "votes": int(row["votes"]),
-                    "rating": row["rating"],
-                    "difficulty": difficulty,
-                })
-                if len(candidates) >= count:
-                    break
 
-            for movie in candidates[:count]:
-                sanitized = _sanitize_dirname(movie["display_name"])
-                excluded.add(sanitized)
-                picked.append(movie)
-    return picked
+def _claim_next_movie():
+    """Pick the next movie to download and register it as active.
+
+    The difficulty with the fewest saved plus in-progress movies goes first,
+    keeping easy, medium and hard roughly level. A band with nothing left to
+    download is passed over. Returns None if every band is exhausted.
+    """
+    with selection_lock:
+        counts = {name: len(dirs) for name, dirs in _downloaded_by_difficulty().items()}
+        now = time.time()
+        with active_downloads_lock:
+            for job in active_downloads.values():
+                counts[job["difficulty"]] += 1
+            excluded = _get_downloaded_movies() | set(active_downloads)
+            for name, failed_at in list(skipped_movies.items()):
+                if now - failed_at > SKIP_TTL:
+                    del skipped_movies[name]
+            excluded |= set(skipped_movies)
+
+        with _open_local_movies_db() as connection:
+            for difficulty in sorted(counts, key=lambda d: (counts[d], random.random())):
+                movie = _pick_movie(connection, difficulty, excluded)
+                if movie:
+                    with active_downloads_lock:
+                        active_downloads[_sanitize_dirname(movie["display_name"])] = {
+                            "difficulty": difficulty,
+                            "outstanding": 0,
+                        }
+                    return movie
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Single-movie download + process
 # ---------------------------------------------------------------------------
 
+def _outstanding_bytes(exclude=None):
+    """Bytes that running downloads (other than *exclude*) still need."""
+    with active_downloads_lock:
+        return sum(job["outstanding"] for name, job in active_downloads.items() if name != exclude)
+
+
+def _has_room_for_download():
+    """True if at least a small release fits above the disk reserve."""
+    room = _get_free_space(PROJECT_DIR) - _outstanding_bytes() - DISK_RESERVE
+    return room >= MIN_RELEASE_BYTES
+
+
+def _claim_space(sanitized, size):
+    """Reserve *size* bytes for a download if it fits above the disk reserve."""
+    with active_downloads_lock:
+        others = sum(job["outstanding"] for name, job in active_downloads.items() if name != sanitized)
+        if _get_free_space(PROJECT_DIR) - others - size < DISK_RESERVE:
+            return False
+        if sanitized in active_downloads:
+            active_downloads[sanitized]["outstanding"] = size
+        return True
+
+
+def _set_outstanding(sanitized, size):
+    with active_downloads_lock:
+        if sanitized in active_downloads:
+            active_downloads[sanitized]["outstanding"] = max(0, int(size))
+
+
+# Results of _download_and_process_movie.
+DOWNLOAD_OK = "ok"
+DOWNLOAD_NO_RELEASE = "no-release"  # nothing suitable to download
+DOWNLOAD_NO_SPACE = "no-space"      # the release doesn't fit above the reserve yet
+DOWNLOAD_FAILED = "failed"          # torrent, file or encode problem
+
+
 def _download_and_process_movie(movie_name, on_ready=None):
-    """Full pipeline for one movie. Returns True on success.
+    """Full pipeline for one movie. Returns one of the DOWNLOAD_* results.
 
     ``on_ready`` runs after all clips are encoded and just before the folder is
     published to Movies/, so metadata exists by the time a game can pick it.
     """
     if not movie_name:
-        return False
+        return DOWNLOAD_FAILED
+    sanitized = _sanitize_dirname(movie_name)
 
-    # --- Disk check before download ---
-    if _get_free_space(PROJECT_DIR) < MIN_FREE_DOWNLOAD:
-        print(f"Skipping {movie_name}: not enough free space for download.", file=sys.stderr)
-        return False
-
-    link = run_search(movie_name)
+    link, size = run_search(movie_name)
     if not link:
         print(f"No torrent link found for {movie_name}; aborting download.")
-        return False
+        return DOWNLOAD_NO_RELEASE
+
+    # --- Disk check before download ---
+    if not _claim_space(sanitized, size):
+        print(
+            f"Not downloading {movie_name}: {size / 1024 ** 3:.1f} GB would cut into the "
+            f"{DISK_RESERVE / 1024 ** 3:.0f} GB disk reserve.",
+            file=sys.stderr,
+        )
+        return DOWNLOAD_NO_SPACE
 
     print(f"Adding torrent for {movie_name}: {link[:100]}...")
     opener = _build_opener()
@@ -984,7 +1053,7 @@ def _download_and_process_movie(movie_name, on_ready=None):
             },
         )
     except RuntimeError:
-        return False
+        return DOWNLOAD_FAILED
 
     # Poll
     poll_interval = 2
@@ -1002,7 +1071,7 @@ def _download_and_process_movie(movie_name, on_ready=None):
         if _get_free_space(PROJECT_DIR) < CRITICAL_FREE:
             print(f"Aborting download for {movie_name}: critical disk space.", file=sys.stderr)
             _delete_torrent(opener, torrent_hash, delete_files=True)
-            return False
+            return DOWNLOAD_FAILED
 
         try:
             body = _api_request(
@@ -1013,7 +1082,7 @@ def _download_and_process_movie(movie_name, on_ready=None):
             )
         except RuntimeError:
             _delete_torrent(opener, torrent_hash, delete_files=True)
-            return False
+            return DOWNLOAD_FAILED
 
         torrents = json.loads(body)
         if not torrents:
@@ -1028,6 +1097,8 @@ def _download_and_process_movie(movie_name, on_ready=None):
         content_path = torrent.get("content_path")
         save_path = torrent.get("save_path")
         torrent_name = torrent.get("name")
+        total = torrent.get("size") or size
+        _set_outstanding(sanitized, total * (1 - progress))
 
         # Log progress every ~10%
         if progress - last_logged_progress >= 0.1:
@@ -1041,14 +1112,14 @@ def _download_and_process_movie(movie_name, on_ready=None):
         if torrent_state in ("error", "missingFiles"):
             print(f"Torrent entered bad state for {movie_name}: {torrent_state}")
             _delete_torrent(opener, torrent_hash, delete_files=True)
-            return False
+            return DOWNLOAD_FAILED
 
         time.sleep(poll_interval)
         elapsed += poll_interval
 
     if not finished:
         _delete_torrent(opener, torrent_hash, delete_files=True)
-        return False
+        return DOWNLOAD_FAILED
 
     if not content_path and save_path and torrent_name:
         content_path = os.path.join(save_path, torrent_name)
@@ -1058,7 +1129,7 @@ def _download_and_process_movie(movie_name, on_ready=None):
 
     # Post-processing
     if not content_path or not os.path.exists(content_path):
-        return False
+        return DOWNLOAD_FAILED
 
     # --- Disk check before encoding ---
     if _get_free_space(PROJECT_DIR) < MIN_FREE_ENCODE:
@@ -1067,7 +1138,7 @@ def _download_and_process_movie(movie_name, on_ready=None):
             os.remove(content_path)
         else:
             shutil.rmtree(content_path)
-        return False
+        return DOWNLOAD_FAILED
 
     content_path = os.path.normpath(content_path)
     video_files = []
@@ -1085,10 +1156,9 @@ def _download_and_process_movie(movie_name, on_ready=None):
             os.remove(content_path)
         else:
             shutil.rmtree(content_path)
-        return False
+        return DOWNLOAD_FAILED
 
     largest = max(video_files, key=os.path.getsize)
-    sanitized = _sanitize_dirname(movie_name)
     final_dir = os.path.join(PROJECT_DIR, "Movies", sanitized)
     movies_dir = os.path.join(STAGING_DIR, sanitized)
     shutil.rmtree(movies_dir, ignore_errors=True)
@@ -1102,7 +1172,7 @@ def _download_and_process_movie(movie_name, on_ready=None):
             os.remove(content_path)
         else:
             shutil.rmtree(content_path)
-        return False
+        return DOWNLOAD_FAILED
 
     print(f"Starting ffmpeg encoding for {movie_name}...")
     try:
@@ -1117,7 +1187,7 @@ def _download_and_process_movie(movie_name, on_ready=None):
             os.remove(content_path)
         else:
             shutil.rmtree(content_path)
-        return False
+        return DOWNLOAD_FAILED
 
     # Delete original downloaded files
     if content_path and os.path.exists(content_path):
@@ -1129,7 +1199,7 @@ def _download_and_process_movie(movie_name, on_ready=None):
     if not _has_all_clips(movies_dir):
         print(f"ffmpeg produced incomplete clips for {movie_name}", file=sys.stderr)
         shutil.rmtree(movies_dir, ignore_errors=True)
-        return False
+        return DOWNLOAD_FAILED
 
     try:
         if on_ready:
@@ -1141,32 +1211,36 @@ def _download_and_process_movie(movie_name, on_ready=None):
         shutil.rmtree(movies_dir, ignore_errors=True)
         raise
 
-    return True
+    return DOWNLOAD_OK
 
 
 # ---------------------------------------------------------------------------
-# Background worker
+# Background workers
 # ---------------------------------------------------------------------------
 
 def _download_worker():
+    """Keep downloading movies, lowest-stocked difficulty first, while the
+    disk has room above DISK_RESERVE."""
+    errors = 0
     while True:
-        job = download_queue.get()
+        if not _has_room_for_download():
+            time.sleep(SPACE_POLL)
+            continue
+
+        try:
+            job = _claim_next_movie()
+        except (OSError, sqlite3.Error) as exc:
+            print(f"Could not pick a movie to download: {exc}", file=sys.stderr)
+            time.sleep(IDLE_POLL)
+            continue
         if job is None:
-            break
-
-        print(f"Worker picked up job: {job['display_name']}")
-
-        # Block until there is enough free space for a download.
-        # If space is low, sleep and retry so the queue is preserved.
-        while _get_free_space(PROJECT_DIR) < MIN_FREE_DOWNLOAD:
-            print("Disk space low; waiting before next download...")
-            time.sleep(30)
+            time.sleep(IDLE_POLL)
+            continue
 
         sanitized = _sanitize_dirname(job["display_name"])
-        with active_downloads_lock:
-            active_downloads.add(sanitized)
+        print(f"Worker picked up {job['difficulty']} movie: {job['display_name']}")
         try:
-            success = _download_and_process_movie(
+            result = _download_and_process_movie(
                 job["display_name"],
                 on_ready=lambda: _add_movie_metadata(
                     sanitized,
@@ -1179,18 +1253,29 @@ def _download_worker():
                     imdb_id=job.get("imdb_id"),
                 ),
             )
-            if success:
-                print(f"Successfully downloaded and processed: {job['display_name']}")
-            else:
-                print(f"Download pipeline returned False for: {job['display_name']}")
         except Exception as exc:
-            msg = f"Download failed for {job['display_name']}: {exc}"
-            print(msg, file=sys.stderr)
-            print(msg)
+            # Usually qBittorrent is unreachable; back off rather than skip the movie.
+            errors += 1
+            delay = min(MAX_ERROR_BACKOFF, 15 * 2 ** errors)
+            print(f"Download failed for {job['display_name']}: {exc}; retrying in {delay}s", file=sys.stderr)
+            result = None
+        else:
+            errors = 0
+            delay = 0
         finally:
             with active_downloads_lock:
-                active_downloads.discard(sanitized)
-            download_queue.task_done()
+                active_downloads.pop(sanitized, None)
+
+        if result == DOWNLOAD_OK:
+            print(f"Successfully downloaded and processed: {job['display_name']}")
+        elif result in (DOWNLOAD_NO_RELEASE, DOWNLOAD_FAILED):
+            print(f"Skipping {job['display_name']} for a day ({result})")
+            with active_downloads_lock:
+                skipped_movies[sanitized] = time.time()
+        elif result == DOWNLOAD_NO_SPACE:
+            delay = SPACE_POLL
+        if delay:
+            time.sleep(delay)
 
 
 _cleanup_incomplete_movies()
@@ -1205,12 +1290,13 @@ def _run_clip_repair():
 
 threading.Thread(target=_run_clip_repair, name="moviedle-clip-repair", daemon=True).start()
 
-for worker_number in range(1, DOWNLOAD_WORKERS + 1):
-    threading.Thread(
-        target=_download_worker,
-        name=f"moviedle-download-{worker_number}",
-        daemon=True,
-    ).start()
+if AUTO_DOWNLOAD:
+    for worker_number in range(1, DOWNLOAD_WORKERS + 1):
+        threading.Thread(
+            target=_download_worker,
+            name=f"moviedle-download-{worker_number}",
+            daemon=True,
+        ).start()
 
 
 # ---------------------------------------------------------------------------
@@ -1222,94 +1308,22 @@ def index():
     return render_template('index.html')
 
 
-@app.route('/download-movies', methods=["POST"])
-def download_movies():
-    data = request.get_json(silent=True)
-    if data is None:
-        data = {}
-    if not isinstance(data, dict):
-        return jsonify({"error": "request body must be a JSON object"}), 400
-    count = data.get("count", 1)
-
-    if isinstance(count, bool) or not isinstance(count, int) or count < 1 or count > 1000:
-        return jsonify({"error": "count must be an integer 1-1000"}), 400
-
-    raw_difficulties = data.get("difficulties", data.get("difficulty"))
-    if raw_difficulties is None:
-        difficulties = list(DIFFICULTY_BANDS)
-    elif isinstance(raw_difficulties, str):
-        if raw_difficulties.strip().lower() == "all":
-            difficulties = list(DIFFICULTY_BANDS)
-        else:
-            difficulties = [item.strip().lower() for item in raw_difficulties.split(",") if item.strip()]
-    elif isinstance(raw_difficulties, list):
-        difficulties = [item.strip().lower() for item in raw_difficulties if isinstance(item, str) and item.strip()]
-    else:
-        return jsonify({"error": "difficulties must be a list or comma-separated string"}), 400
-
-    # Preserve the configured order while removing duplicates.
-    difficulties = list(dict.fromkeys(difficulties))
-    invalid = [difficulty for difficulty in difficulties if difficulty not in DIFFICULTY_BANDS]
-    if invalid or not difficulties:
-        return jsonify({
-            "error": "difficulties must contain only easy, medium, or hard",
-            "invalid": invalid,
-        }), 400
-
-    with selection_lock:
-        try:
-            movies = _pick_movies_not_downloaded(count, difficulties)
-        except FileNotFoundError as exc:
-            return jsonify({"error": str(exc)}), 500
-        except sqlite3.Error as exc:
-            return jsonify({"error": f"Unable to read local movies database: {exc}"}), 500
-
-        queued_by_difficulty = {
-            difficulty: sum(movie.get("difficulty") == difficulty for movie in movies)
-            for difficulty in difficulties
-        }
-        insufficient = {
-            difficulty: queued_by_difficulty[difficulty]
-            for difficulty in difficulties
-            if queued_by_difficulty[difficulty] < count
-        }
-        if insufficient:
-            return jsonify({
-                "error": "Not enough eligible movies for one or more difficulty levels",
-                "requested_per_difficulty": count,
-                "available_by_difficulty": queued_by_difficulty,
-                "difficulties": difficulties,
-            }), 409
-
-        for movie in movies:
-            download_queue.put(movie)
-
-    print(f"Queued {len(movies)} movies for download (requested {count}).")
-    for m in movies:
-        print(f"  - {m['display_name']}")
-
-    return jsonify({
-        "queued": len(movies),
-        "requested": count,
-        "requested_per_difficulty": count,
-        "requested_total": count * len(difficulties),
-        "difficulties": difficulties,
-        "queued_by_difficulty": queued_by_difficulty,
-    })
-
-
 @app.route('/movie-count')
 def movie_count():
     downloaded = _get_movie_count()
     with active_downloads_lock:
         downloading = len(active_downloads)
+        downloading_by_difficulty = {name: 0 for name in DIFFICULTY_BANDS}
+        for job in active_downloads.values():
+            downloading_by_difficulty[job["difficulty"]] += 1
     by_difficulty = {name: len(dirs) for name, dirs in _downloaded_by_difficulty().items()}
     return jsonify({
         "downloaded": downloaded,
         "downloaded_by_difficulty": by_difficulty,
         "downloading": downloading,
-        "queued": download_queue.qsize(),
-        "workers": DOWNLOAD_WORKERS,
+        "downloading_by_difficulty": downloading_by_difficulty,
+        "disk_full": AUTO_DOWNLOAD and not _has_room_for_download(),
+        "workers": DOWNLOAD_WORKERS if AUTO_DOWNLOAD else 0,
     })
 
 
@@ -1469,7 +1483,8 @@ def disk_status():
         "total_gb": round(total / (1024 ** 3), 2),
         "used_gb": round(used / (1024 ** 3), 2),
         "free_gb": round(free / (1024 ** 3), 2),
-        "low_space": free < MIN_FREE_DOWNLOAD,
+        "reserve_gb": round(DISK_RESERVE / (1024 ** 3), 2),
+        "low_space": free < DISK_RESERVE,
     })
 
 
