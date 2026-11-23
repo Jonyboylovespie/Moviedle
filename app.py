@@ -437,6 +437,186 @@ def _get_video_duration(path):
 
 
 # ---------------------------------------------------------------------------
+# Clip encoding
+# ---------------------------------------------------------------------------
+
+# Transfer functions used by HDR10 (PQ) and HLG sources.
+HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
+# Browsers reliably decode only 8-bit 4:2:0 H.264 (High 10 and 4:4:4 mostly
+# fail), so every clip is converted to this before encoding.
+CLIP_PIX_FMT = "yuv420p"
+# Map HDR to SDR so PQ/HLG sources don't look washed out in an SDR browser.
+# zscale tags the frames as BT.709, which libx264 writes into the clip.
+TONEMAP_FILTER = (
+    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+    "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv"
+)
+_zscale_available = None
+
+
+def _has_zscale():
+    """True if this ffmpeg build has the zscale filter needed to tone-map."""
+    global _zscale_available
+    if _zscale_available is None:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-filters"],
+                capture_output=True, text=True, check=True,
+            )
+            _zscale_available = bool(re.search(r"^\s*\S+\s+zscale\s", result.stdout, re.MULTILINE))
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            _zscale_available = False
+    return _zscale_available
+
+
+def _probe_video_stream(path):
+    """Return the first video stream's ffprobe fields, or {} on failure."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name,profile,pix_fmt,color_transfer",
+                "-of", "json", path,
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        streams = json.loads(result.stdout).get("streams") or []
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        return {}
+    return streams[0] if streams else {}
+
+
+def _clip_filter(stream):
+    """Per-clip filter that makes the output browser-playable 8-bit SDR.
+
+    It runs after ``fps`` so only the frames kept in the clip are tone-mapped,
+    not every frame of the source movie.
+    """
+    if stream.get("color_transfer") in HDR_TRANSFERS and _has_zscale():
+        return f"{TONEMAP_FILTER},format={CLIP_PIX_FMT}"
+    return f"format={CLIP_PIX_FMT}"
+
+
+def _clip_output_args(path):
+    return [
+        "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", CLIP_PIX_FMT,
+        # Put the index at the front so playback starts without fetching the end.
+        "-movflags", "+faststart",
+        path,
+    ]
+
+
+def _encode_clips(source, out_dir, duration):
+    """Encode the 1s-6s clips from *source* into *out_dir* in a single pass.
+
+    Raises CalledProcessError or FileNotFoundError if ffmpeg fails.
+    """
+    post = _clip_filter(_probe_video_stream(source))
+    labels = [chr(ord('a') + i) for i in range(len(CLIP_NAMES))]
+    chains = [
+        f"[{label}]setpts=PTS/{duration / sec},fps=24,{post}[{label}1]"
+        for label, sec in zip(labels, range(1, len(CLIP_NAMES) + 1))
+    ]
+    filter_complex = (
+        f"[0:v]split={len(labels)}" + "".join(f"[{label}]" for label in labels) + ";" + ";".join(chains)
+    )
+
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", source, "-filter_complex", filter_complex]
+    for label, clip in zip(labels, CLIP_NAMES):
+        cmd.extend(["-map", f"[{label}1]", *_clip_output_args(os.path.join(out_dir, clip))])
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+
+def _mp4_has_faststart(path):
+    """True if the MP4 ``moov`` index comes before the ``mdat`` media data."""
+    try:
+        with open(path, "rb") as f:
+            while True:
+                header = f.read(8)
+                if len(header) < 8:
+                    return False
+                size = int.from_bytes(header[:4], "big")
+                kind = header[4:8]
+                if kind == b"moov":
+                    return True
+                if kind == b"mdat":
+                    return False
+                if size == 1:
+                    size = int.from_bytes(f.read(8), "big")
+                    f.seek(size - 16, os.SEEK_CUR)
+                elif size == 0:
+                    return False
+                else:
+                    f.seek(size - 8, os.SEEK_CUR)
+    except OSError:
+        return False
+
+
+def _clip_problems(path):
+    """List the reasons a finished clip may not play well in a browser."""
+    stream = _probe_video_stream(path)
+    problems = []
+    if not stream:
+        return ["unreadable"]
+    if stream.get("codec_name") != "h264":
+        problems.append(f"codec {stream.get('codec_name')}")
+    if stream.get("pix_fmt") != CLIP_PIX_FMT:
+        problems.append(f"pix_fmt {stream.get('pix_fmt')}")
+    if stream.get("color_transfer") in HDR_TRANSFERS:
+        problems.append(f"HDR transfer {stream.get('color_transfer')}")
+    if not _mp4_has_faststart(path):
+        problems.append("no faststart")
+    return problems
+
+
+def _repair_clip(path):
+    """Fix a clip in place. Returns the problems found (empty if none)."""
+    problems = _clip_problems(path)
+    if not problems or problems == ["unreadable"]:
+        return problems
+    temporary = f"{path}.{uuid.uuid4().hex}.tmp.mp4"
+    if problems == ["no faststart"]:
+        # Only the index is in the wrong place, so a remux is enough.
+        cmd = ["ffmpeg", "-y", "-v", "error", "-i", path, "-map", "0:v:0", "-c", "copy",
+               "-movflags", "+faststart", temporary]
+    else:
+        post = _clip_filter(_probe_video_stream(path))
+        cmd = ["ffmpeg", "-y", "-v", "error", "-i", path, "-map", "0:v:0", "-vf", post,
+               *_clip_output_args(temporary)]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return problems
+
+
+def _repair_existing_clips():
+    """Re-encode clips made by older versions that browsers can't play
+    (10-bit, HDR) and add faststart to the rest."""
+    movies_dir = os.path.join(PROJECT_DIR, "Movies")
+    if not os.path.isdir(movies_dir):
+        return
+    fixed = 0
+    for name in sorted(os.listdir(movies_dir)):
+        for clip in CLIP_NAMES:
+            path = os.path.join(movies_dir, name, clip)
+            if not os.path.isfile(path):
+                continue
+            try:
+                problems = _repair_clip(path)
+            except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+                print(f"Could not repair clip {name}/{clip}: {exc}", file=sys.stderr)
+                continue
+            if problems:
+                fixed += 1
+                print(f"Repaired clip {name}/{clip}: {', '.join(problems)}")
+    if fixed:
+        print(f"Clip repair finished: {fixed} clips fixed.")
+
+
+# ---------------------------------------------------------------------------
 # Metadata helpers
 # ---------------------------------------------------------------------------
 
@@ -533,8 +713,15 @@ def _cleanup_incomplete_movies():
             _delete_movie(name)
 
 
+def _get_playable_movies():
+    """Downloaded movies that a new round may pick (finished ones excluded)."""
+    with games_lock:
+        retired = set(retired_movies)
+    return _get_downloaded_movies() - retired
+
+
 def _get_movie_count():
-    return len(_get_downloaded_movies())
+    return len(_get_playable_movies())
 
 
 def _movie_difficulty(info):
@@ -546,7 +733,7 @@ def _downloaded_by_difficulty(meta=None):
     if meta is None:
         meta = _load_metadata()
     groups = {name: [] for name in DIFFICULTY_BANDS}
-    for movie_dir in _get_downloaded_movies():
+    for movie_dir in _get_playable_movies():
         difficulty = _movie_difficulty(meta.get(movie_dir, {}))
         if difficulty in groups:
             groups[difficulty].append(movie_dir)
@@ -562,6 +749,64 @@ def _delete_movie(sanitized_name):
         if sanitized_name in meta:
             del meta[sanitized_name]
             _save_metadata(meta)
+
+
+# ---------------------------------------------------------------------------
+# Game rounds
+# ---------------------------------------------------------------------------
+
+# Rounds are kept in memory; the app runs as a single process (the download
+# queue relies on that too). The browser only gets an opaque game id, so the
+# answer never reaches it before the round ends. A finished movie is retired
+# at once and deleted only when no other round is still playing it.
+GAME_TTL = 3 * 3600  # abandoned rounds stop pinning their movie after this
+active_games = {}  # game_id -> {"movie_dir": str, "started": float}
+retired_movies = set()
+games_lock = threading.Lock()
+
+
+def _delete_unused_retired_locked():
+    """Expire stale rounds, then delete retired movies nobody is playing.
+
+    Caller must hold ``games_lock``.
+    """
+    now = time.time()
+    for game_id in [g for g, game in active_games.items() if now - game["started"] > GAME_TTL]:
+        del active_games[game_id]
+    in_play = {game["movie_dir"] for game in active_games.values()}
+    for movie_dir in [m for m in retired_movies if m not in in_play]:
+        retired_movies.discard(movie_dir)
+        _delete_movie(movie_dir)
+
+
+def _start_game(candidates):
+    """Register a round for a random playable candidate; None if none left."""
+    with games_lock:
+        _delete_unused_retired_locked()
+        candidates = [m for m in candidates if m not in retired_movies]
+        if not candidates:
+            return None, None
+        movie_dir = random.choice(candidates)
+        game_id = uuid.uuid4().hex
+        active_games[game_id] = {"movie_dir": movie_dir, "started": time.time()}
+    return game_id, movie_dir
+
+
+def _game_movie(game_id):
+    with games_lock:
+        game = active_games.get(game_id) if isinstance(game_id, str) else None
+        return game["movie_dir"] if game else None
+
+
+def _finish_game(game_id):
+    """End a round and retire its movie. Returns False if it already ended."""
+    with games_lock:
+        game = active_games.pop(game_id, None)
+        if not game:
+            return False
+        retired_movies.add(game["movie_dir"])
+        _delete_unused_retired_locked()
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -859,34 +1104,13 @@ def _download_and_process_movie(movie_name, on_ready=None):
             shutil.rmtree(content_path)
         return False
 
-    # Single-pass multi-output ffmpeg
-    chains = []
-    for i, sec in enumerate(range(1, 7), start=1):
-        label = chr(ord('a') + i - 1)
-        speed = duration / sec
-        chains.append(f"[{label}]setpts=PTS/{speed},fps=24[{label}1]")
-
-    filter_complex = f"[0:v]split=6[a][b][c][d][e][f];" + ";".join(chains)
-
-    cmd = ["ffmpeg", "-y", "-i", largest, "-filter_complex", filter_complex]
-    for i, sec in enumerate(range(1, 7), start=1):
-        label = chr(ord('a') + i - 1)
-        cmd.extend([
-            "-an", "-r", "24", "-c:v", "libx264", "-preset", "ultrafast",
-            "-map", f"[{label}1]", os.path.join(movies_dir, f"{sec}s.mp4")
-        ])
-
     print(f"Starting ffmpeg encoding for {movie_name}...")
     try:
-        subprocess.run(
-            cmd,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        _encode_clips(largest, movies_dir, duration)
         print(f"Finished ffmpeg encoding for {movie_name}")
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print(f"ffmpeg encoding failed for {movie_name}")
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        detail = getattr(exc, "stderr", None) or exc
+        print(f"ffmpeg encoding failed for {movie_name}: {str(detail).strip()[-500:]}")
         # Clean up partial clips and original files on encode failure
         shutil.rmtree(movies_dir, ignore_errors=True)
         if os.path.isfile(content_path):
@@ -970,6 +1194,16 @@ def _download_worker():
 
 
 _cleanup_incomplete_movies()
+
+
+def _run_clip_repair():
+    try:
+        _repair_existing_clips()
+    except Exception as exc:  # never let a repair bug take down the app
+        print(f"Clip repair failed: {exc}", file=sys.stderr)
+
+
+threading.Thread(target=_run_clip_repair, name="moviedle-clip-repair", daemon=True).start()
 
 for worker_number in range(1, DOWNLOAD_WORKERS + 1):
     threading.Thread(
@@ -1105,62 +1339,74 @@ def game_start():
     meta = _load_metadata()
     if difficulty:
         dirs = sorted(_downloaded_by_difficulty(meta)[difficulty])
-        if not dirs:
-            return jsonify({"error": f"No {difficulty} movies available"}), 404
     else:
-        dirs = sorted(_get_downloaded_movies())
-        if not dirs:
-            return jsonify({"error": "No movies available"}), 404
+        dirs = sorted(_get_playable_movies())
+    game_id, movie_dir = _start_game(dirs)
+    if not game_id:
+        label = f"{difficulty} movies" if difficulty else "movies"
+        return jsonify({"error": f"No {label} available"}), 404
 
-    movie_dir = random.choice(dirs)
-    info = meta.get(movie_dir, {})
+    # The title is deliberately left out: it is only sent once the round ends.
     return jsonify({
-        "movie_dir": movie_dir,
+        "game_id": game_id,
         "clips": list(CLIP_NAMES),
-        "movie_name": info.get("display_name", movie_dir),
-        "difficulty": _movie_difficulty(info),
+        "difficulty": _movie_difficulty(meta.get(movie_dir, {})),
     })
+
+
+@app.route('/game/<game_id>/clips/<clip>')
+def game_clip(game_id, clip):
+    movie_dir = _game_movie(game_id)
+    if not movie_dir or clip not in CLIP_NAMES:
+        abort(404)
+    return send_from_directory(os.path.join(PROJECT_DIR, "Movies", movie_dir), clip)
+
+
+@app.route('/game/clip-error', methods=["POST"])
+def game_clip_error():
+    """Log a clip the browser failed to play so it shows up in the journal."""
+    data = request.get_json(silent=True) or {}
+    movie_dir = _game_movie(data.get("game_id")) or "unknown game"
+    clip = str(data.get("clip", ""))[:20]
+    detail = " ".join(str(data.get("detail", "")).split())[:300]
+    print(f"Browser could not play {movie_dir}/{clip}: {detail}", file=sys.stderr)
+    return "", 204
 
 
 @app.route('/game/guess', methods=["POST"])
 def game_guess():
-    data = request.get_json() or {}
-    movie_dir = data.get("movie_dir", "")
+    data = request.get_json(silent=True) or {}
+    game_id = data.get("game_id", "")
     guess = data.get("guess", "")
 
-    if not movie_dir or not guess:
-        return jsonify({"error": "movie_dir and guess are required"}), 400
+    if not game_id or not isinstance(guess, str) or not guess.strip():
+        return jsonify({"error": "game_id and guess are required"}), 400
 
-    meta = _load_metadata()
-    info = meta.get(movie_dir)
+    movie_dir = _game_movie(game_id)
+    info = _load_metadata().get(movie_dir) if movie_dir else None
     if not info:
-        return jsonify({"error": "Movie not found"}), 404
+        return jsonify({"error": "Game not found"}), 404
 
-    correct = guess.lower() == info["display_name"].lower()
-
-    if correct:
-        _delete_movie(movie_dir)
-        return jsonify({"correct": True, "movie_name": info["display_name"], "poster_url": _poster_url(info)})
-    return jsonify({"correct": False})
+    if guess.strip().lower() != info["display_name"].lower():
+        return jsonify({"correct": False})
+    if not _finish_game(game_id):
+        return jsonify({"error": "Game not found"}), 404
+    return jsonify({"correct": True, "movie_name": info["display_name"], "poster_url": _poster_url(info)})
 
 
 @app.route('/game/reveal', methods=["POST"])
 def game_reveal():
-    data = request.get_json() or {}
-    movie_dir = data.get("movie_dir", "")
+    data = request.get_json(silent=True) or {}
+    game_id = data.get("game_id", "")
 
-    if not movie_dir:
-        return jsonify({"error": "movie_dir is required"}), 400
+    if not game_id:
+        return jsonify({"error": "game_id is required"}), 400
 
-    meta = _load_metadata()
-    info = meta.get(movie_dir)
-    if not info:
-        return jsonify({"error": "Movie not found"}), 404
-
-    movie_name = info["display_name"]
-    poster_url = _poster_url(info)
-    _delete_movie(movie_dir)
-    return jsonify({"movie_name": movie_name, "poster_url": poster_url})
+    movie_dir = _game_movie(game_id)
+    info = _load_metadata().get(movie_dir) if movie_dir else None
+    if not info or not _finish_game(game_id):
+        return jsonify({"error": "Game not found"}), 404
+    return jsonify({"movie_name": info["display_name"], "poster_url": _poster_url(info)})
 
 
 @app.route('/poster/<imdb_id>')
@@ -1225,12 +1471,6 @@ def disk_status():
         "free_gb": round(free / (1024 ** 3), 2),
         "low_space": free < MIN_FREE_DOWNLOAD,
     })
-
-
-@app.route('/movies/<path:subpath>')
-def serve_movie(subpath):
-    movies_dir = os.path.join(PROJECT_DIR, "Movies")
-    return send_from_directory(movies_dir, subpath)
 
 
 if __name__ == '__main__':

@@ -153,19 +153,12 @@ legend{font-weight:600;margin-bottom:6px}
 .intermission h3{margin:0;font-family:var(--round);font-size:clamp(1.6rem,4vw,2.6rem);color:var(--tungsten);
   letter-spacing:.2em;text-shadow:0 0 22px rgba(255,178,74,.7)}
 .intermission p{margin:.4rem 0 0;color:var(--muted)}
-/* abstract CSS clip */
-#game-video{position:absolute;inset:-8%;--h:30;
-  background:
-   radial-gradient(circle at var(--x1,30%) 40%,hsla(calc(var(--h)*1deg),85%,62%,.9),transparent 34%),
-   radial-gradient(circle at var(--x2,70%) 65%,hsla(calc(var(--h)*1deg + 40deg),70%,45%,.85),transparent 40%),
-   linear-gradient(120deg,hsl(calc(var(--h)*1deg - 20deg),60%,16%),hsl(calc(var(--h)*1deg + 20deg),50%,9%));
-  animation:pan 6s ease-in-out infinite alternate;filter:sepia(.35) contrast(1.05)}
-#game-video::before{content:"";position:absolute;left:-20%;right:-20%;bottom:0;height:42%;
-  background:radial-gradient(ellipse at 50% 100%,rgba(10,5,2,.95) 40%,transparent 70%)}
-#game-video::after{content:"";position:absolute;inset:0;
-  background:repeating-radial-gradient(circle at 37% 61%,rgba(255,255,255,.04) 0 1px,transparent 1px 4px);animation:flick .18s steps(2) infinite}
-@keyframes pan{to{transform:translate(4%,-3%) scale(1.06);filter:sepia(.35) brightness(1.15)}}
-@keyframes flick{50%{opacity:.4}}
+/* Fill the screen and letterbox clips that aren't 16:9. */
+#game-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+#clip-message{position:absolute;inset:0;z-index:5;display:grid;place-items:center;align-content:center;gap:14px;padding:20px;
+  text-align:center;background:rgba(18,10,5,.88);color:var(--tungsten);font-family:var(--round);font-weight:700}
+#clip-message[hidden]{display:none}
+#clip-message p{margin:0}
 .runbar{position:absolute;left:0;bottom:0;height:4px;background:var(--amber);box-shadow:0 0 10px var(--amber);z-index:3;width:0}
 .screen-tags{position:absolute;top:12px;right:12px;z-index:4;display:flex;gap:8px}
 .screen-tags>*{font-family:var(--round);font-weight:800;
@@ -292,6 +285,7 @@ legend{font-weight:600;margin-bottom:6px}
         <div class="intermission" id="intermission"><div><h3>INTERMISSION</h3><p id="inter-sub">Thread a reel, then pick a difficulty.</p></div></div>
         <div id="game-container" hidden>
           <video id="game-video" controls autoplay loop muted playsinline aria-label="Movie clip"></video>
+          <div id="clip-message" role="alert" hidden><p id="clip-message-text"></p><button id="clip-retry" class="btn">Retry</button></div>
           <div class="runbar" id="runbar"></div>
           <div class="screen-tags">
             <span id="difficulty-badge" hidden></span>
@@ -389,7 +383,7 @@ faviconImage.onload = () => {
     setInterval(drawFavicon, 180);
 };
 
-let currentMovieDir = '';
+let currentGameId = '';
 let currentClips = [];
 let currentMovieName = '';
 let currentPosterUrl = '';
@@ -548,16 +542,67 @@ function stopRunbar() {
     runbar.style.width = '0';
 }
 
+const clipMessage = $('clip-message');
+const clipMessageText = $('clip-message-text');
+const clipRetry = $('clip-retry');
+let currentClipIndex = 0;
+let clipAction = 'retry';
+
+function hideClipMessage() {
+    clipMessage.hidden = true;
+}
+
+function showClipMessage(text, action) {
+    clipAction = action;
+    clipMessageText.textContent = text;
+    clipRetry.textContent = action === 'play' ? '\u25B6 Play clip' : 'Retry';
+    clipMessage.hidden = false;
+}
+
+function playClip() {
+    gameVideo.play().catch((error) => {
+        // AbortError just means a newer clip replaced this one.
+        if (error.name === 'NotAllowedError' && isGameActive) {
+            showClipMessage('Your browser blocked autoplay.', 'play');
+        }
+    });
+}
+
 function loadClip(index) {
     const clip = currentClips[index];
     if (!clip) return;
+    currentClipIndex = index;
+    hideClipMessage();
     clipLabel.textContent = `Clip ${index + 1} / ${currentClips.length}`;
-    gameVideo.src = `/movies/${encodeURIComponent(currentMovieDir)}/${encodeURIComponent(clip)}`;
+    gameVideo.src = `/game/${encodeURIComponent(currentGameId)}/clips/${encodeURIComponent(clip)}`;
     gameVideo.load();
-    gameVideo.play().catch(() => {});
+    playClip();
     startRunbar();
     setLadder();
 }
+
+const MEDIA_ERRORS = {1: 'aborted', 2: 'network error', 3: 'decode error', 4: 'missing or unsupported'};
+gameVideo.addEventListener('error', () => {
+    if (!isGameActive) return;
+    const error = gameVideo.error;
+    const detail = error ? `${MEDIA_ERRORS[error.code] || `code ${error.code}`}${error.message ? `: ${error.message}` : ''}` : 'unknown';
+    console.error('Clip failed to play', gameVideo.currentSrc, detail);
+    showClipMessage("This clip couldn't play.", 'retry');
+    fetch('/game/clip-error', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({game_id: currentGameId, clip: currentClips[currentClipIndex], detail}),
+    }).catch(() => {});
+});
+
+clipRetry.addEventListener('click', () => {
+    if (clipAction === 'play') {
+        hideClipMessage();
+        playClip();
+    } else {
+        loadClip(currentClipIndex);
+    }
+});
 
 function resetReveal() {
     revealArea.hidden = true;
@@ -592,9 +637,9 @@ function showRevealPoster(url, movieName) {
 }
 
 function startGame(data) {
-    currentMovieDir = data.movie_dir;
+    currentGameId = data.game_id;
     currentClips = data.clips || [1, 2, 3, 4, 5, 6].map((second) => `${second}s.mp4`);
-    currentMovieName = data.movie_name || '';
+    currentMovieName = '';
     const difficulty = ['easy', 'medium', 'hard'].includes(data.difficulty) ? data.difficulty : '';
     difficultyBadge.textContent = difficulty;
     difficultyBadge.className = difficulty;
@@ -642,6 +687,7 @@ function showReveal(won) {
     isGameActive = false;
     stopRunbar();
     gameVideo.pause();
+    hideClipMessage();
     closeDropdown();
     feedback.textContent = won ? `Correct! ${currentMovieName}` : `It was ${currentMovieName}`;
     feedback.className = won ? 'good' : 'bad';
@@ -661,7 +707,7 @@ async function revealMovie() {
         const response = await fetch('/game/reveal', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({movie_dir: currentMovieDir}),
+            body: JSON.stringify({game_id: currentGameId}),
         });
         const data = await response.json();
         if (!response.ok) {
@@ -685,9 +731,17 @@ async function submitGuess() {
         const response = await fetch('/game/guess', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({movie_dir: currentMovieDir, guess}),
+            body: JSON.stringify({game_id: currentGameId, guess}),
         });
         const data = await response.json();
+        if (!response.ok) {
+            // e.g. the round expired or the server restarted.
+            feedback.textContent = data.error === 'Game not found'
+                ? 'This round has ended. Press a Play button to start a new one.'
+                : data.error || 'Error checking guess.';
+            feedback.className = 'bad';
+            return;
+        }
         if (data.correct) {
             currentMovieName = data.movie_name || currentMovieName;
             currentPosterUrl = data.poster_url || '';
