@@ -80,12 +80,12 @@ CRITICAL_FREE = 1 * 1024 ** 3       # 1 GB -> abort active download immediately
 # Assumed size of a release whose size the indexer didn't report.
 UNKNOWN_RELEASE_BYTES = 4 * 1024 ** 3
 
-# Workers download continuously while there is room. Three keeps the library
+# Workers download continuously while there is room. Five keeps the library
 # filling while limiting simultaneous torrent and ffmpeg load.
 try:
-    DOWNLOAD_WORKERS = max(1, min(int(os.getenv("DOWNLOAD_WORKERS", "3")), 8))
+    DOWNLOAD_WORKERS = max(1, min(int(os.getenv("DOWNLOAD_WORKERS", "5")), 8))
 except ValueError:
-    DOWNLOAD_WORKERS = 3
+    DOWNLOAD_WORKERS = 5
 # Set AUTO_DOWNLOAD=0 to run the game without downloading anything (tests).
 AUTO_DOWNLOAD = os.getenv("AUTO_DOWNLOAD", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -93,6 +93,7 @@ SPACE_POLL = 60          # seconds between checks while the disk is full
 IDLE_POLL = 600          # seconds to wait when no movie is left to download
 SKIP_TTL = 24 * 3600     # a movie that failed is not retried for this long
 MAX_ERROR_BACKOFF = 600  # cap on the wait after errors (e.g. qBittorrent down)
+METADATA_TIMEOUT = 60    # give up on a torrent still fetching metadata after this
 
 # ---------------------------------------------------------------------------
 # Download state
@@ -1059,6 +1060,7 @@ def _download_and_process_movie(movie_name, on_ready=None):
     poll_interval = 2
     max_wait = 3600
     elapsed = 0
+    added_at = time.monotonic()
     torrent_hash = None
     content_path = None
     save_path = None
@@ -1111,6 +1113,13 @@ def _download_and_process_movie(movie_name, on_ready=None):
             break
         if torrent_state in ("error", "missingFiles"):
             print(f"Torrent entered bad state for {movie_name}: {torrent_state}")
+            _delete_torrent(opener, torrent_hash, delete_files=True)
+            return DOWNLOAD_FAILED
+        if (
+            torrent_state in ("metaDL", "forcedMetaDL")
+            and time.monotonic() - added_at > METADATA_TIMEOUT
+        ):
+            print(f"No metadata for {movie_name} after {METADATA_TIMEOUT}s; giving up")
             _delete_torrent(opener, torrent_hash, delete_files=True)
             return DOWNLOAD_FAILED
 
