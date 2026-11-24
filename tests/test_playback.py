@@ -264,6 +264,12 @@ class AutoDownloadTests(GameTestCase):
         app.MOVIES_DB_FILE = db
         self.addCleanup(setattr, app, "MOVIES_DB_FILE", saved_db)
 
+    def test_vote_counts_map_to_difficulty_bands(self):
+        cases = {24_999: None, 25_000: "impossible", 99_999: "impossible", 100_000: "hard",
+                 249_999: "hard", 250_000: "medium", 500_000: "easy"}
+        for votes, expected in cases.items():
+            self.assertEqual(app._difficulty_for_votes(votes), expected, votes)
+
     def test_picks_the_least_stocked_difficulty(self):
         add_movie(self.tmp, "Easy One (2000)", "easy")
         add_movie(self.tmp, "Hard One (2000)", "hard")
@@ -310,7 +316,7 @@ class AutoDownloadTests(GameTestCase):
         app.active_downloads["Hard One (2000)"] = {"difficulty": "hard", "outstanding": 0}
         data = self.client.get("/movie-count").get_json()
         self.assertEqual(data["downloading"], 1)
-        self.assertEqual(data["downloading_by_difficulty"], {"hard": 1, "medium": 0, "easy": 0})
+        self.assertEqual(data["downloading_by_difficulty"], {"impossible": 0, "hard": 1, "medium": 0, "easy": 0})
         self.assertNotIn("queued", data)
         self.assertEqual(self.client.post("/download-movies", json={"count": 1}).status_code, 404)
 

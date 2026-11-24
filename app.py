@@ -46,6 +46,7 @@ MOVIES_DB_FILE = os.getenv("MOVIES_DB_PATH", os.path.join(PROJECT_DIR, "data", "
 # Vote-count bands used when selecting titles from the local CS50 database.
 # The upper bound is exclusive so a title belongs to exactly one band.
 DIFFICULTY_BANDS = {
+    "impossible": (25_000, 100_000),
     "hard": (100_000, 250_000),
     "medium": (250_000, 500_000),
     "easy": (500_000, None),
@@ -946,7 +947,7 @@ def _claim_next_movie():
     """Pick the next movie to download and register it as active.
 
     The difficulty with the fewest saved plus in-progress movies goes first,
-    keeping easy, medium and hard roughly level. A band with nothing left to
+    keeping all difficulties roughly level. A band with nothing left to
     download is passed over. Returns None if every band is exhausted.
     """
     with selection_lock:

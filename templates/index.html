@@ -94,6 +94,8 @@ button:disabled{cursor:not-allowed;opacity:.45;filter:saturate(.3)}
 .btn.play.easy:not(:disabled):active{box-shadow:0 1px 0 #3f7a2e}
 .btn.play.hard{background:linear-gradient(180deg,#ffb59e,#f0664a);box-shadow:0 4px 0 #8f2f1c,0 8px 18px rgba(240,102,74,.25)}
 .btn.play.hard:not(:disabled):active{box-shadow:0 1px 0 #8f2f1c}
+.btn.play.impossible{background:linear-gradient(180deg,#d9b8ff,#9a5ce6);box-shadow:0 4px 0 #52297f,0 8px 18px rgba(154,92,230,.25)}
+.btn.play.impossible:not(:disabled):active{box-shadow:0 1px 0 #52297f}
 
 /* ---------- Booth / screen ---------- */
 .booth{position:relative;padding:26px 26px 22px 26px;border-radius:28px;
@@ -143,6 +145,7 @@ button:disabled{cursor:not-allowed;opacity:.45;filter:saturate(.3)}
 #difficulty-badge.easy{color:#9fdc8a;box-shadow:0 0 0 1px rgba(159,220,138,.55)}
 #difficulty-badge.medium{color:var(--tungsten);box-shadow:0 0 0 1px rgba(255,178,74,.6)}
 #difficulty-badge.hard{color:#ff8a6b;box-shadow:0 0 0 1px rgba(255,138,107,.6)}
+#difficulty-badge.impossible{color:#c9a2ff;box-shadow:0 0 0 1px rgba(201,162,255,.6)}
 
 /* clip ladder: film strip */
 .ladder{display:grid;grid-template-columns:repeat(6,1fr);gap:0;margin:18px 0 6px;padding:10px 8px;list-style:none;border-radius:10px;
@@ -231,6 +234,7 @@ button:disabled{cursor:not-allowed;opacity:.45;filter:saturate(.3)}
         <button class="btn wide play easy" data-difficulty="easy" disabled><span>&#9654; Play Easy</span><small data-count>0</small></button>
         <button class="btn wide play medium" data-difficulty="medium" disabled><span>&#9654; Play Medium</span><small data-count>0</small></button>
         <button class="btn wide play hard" data-difficulty="hard" disabled><span>&#9654; Play Hard</span><small data-count>0</small></button>
+        <button class="btn wide play impossible" data-difficulty="impossible" disabled><span>&#9654; Play Impossible</span><small data-count>0</small></button>
       </div>
     </section>
   </aside>
@@ -539,7 +543,7 @@ function startGame(data) {
     currentGameId = data.game_id;
     currentClips = data.clips || [1, 2, 3, 4, 5, 6].map((second) => `${second}s.mp4`);
     currentMovieName = '';
-    const difficulty = ['easy', 'medium', 'hard'].includes(data.difficulty) ? data.difficulty : '';
+    const difficulty = ['easy', 'medium', 'hard', 'impossible'].includes(data.difficulty) ? data.difficulty : '';
     difficultyBadge.textContent = difficulty;
     difficultyBadge.className = difficulty;
     difficultyBadge.hidden = !difficulty;
