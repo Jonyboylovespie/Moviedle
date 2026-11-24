@@ -354,9 +354,10 @@ def _title_match(file_name, title, year):
 
     The best match starts with the title and is followed by the year, allowing
     edition words in between. Names that only contain the title and then the
-    exact year are accepted too, but only for titles of two or more words:
-    for one-word titles like "It" or "Crew" that matches other films
-    ("Too Small To Take It All 2017", "The Clean Up Crew 2024").
+    exact year are accepted too, but only for titles of two or more words
+    counting a leading article ("The Sacrifice"): for one-word titles like
+    "It" or "Crew" that matches other films ("Too Small To Take It All 2017",
+    "The Clean Up Crew 2024").
     """
     name = _match_tokens(file_name)
     variants = _title_variants(title)
@@ -377,9 +378,10 @@ def _title_match(file_name, title, year):
                 break
             if token not in EDITION_WORDS:
                 break
-    if not year or len(variants[-1]) < 2:
+    if not year:
         return 0
-    for title_tokens in variants:
+    # "The Sacrifice" may match as a whole, but never a bare "Sacrifice".
+    for title_tokens in (v for v in variants if len(v) >= 2):
         width = len(title_tokens)
         for start in range(len(name) - width + 1):
             if name[start:start + width] == title_tokens and year in name[start + width:]:

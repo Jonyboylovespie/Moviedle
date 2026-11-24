@@ -40,6 +40,7 @@ class WrongFilmsRejected(unittest.TestCase):
         ("Up In The Air 2009 720p", "Up", "2009"),
         ("48 Hrs 1982 + Another 48 Hrs 1990 Remastered 720p", "48 Hrs.", "1982"),
         ("Batman Begins 2005 1080p", "Batman", "1989"),
+        ("Kids Sacrifice Special 1986 720p", "The Sacrifice", "1986"),
     ]
 
     def test_rejected(self):
@@ -83,6 +84,7 @@ class RightFilmsAccepted(unittest.TestCase):
         ("Blade.Runner.2049.2017.1080p", "Blade Runner 2049", "2017"),
         ("The Lord of the Rings The Fellowship of the Ring Extended Edition 2001 1080p",
          "The Lord of the Rings: The Fellowship of the Ring", "2001"),
+        ("Andrej Tarkovskij's The Sacrifice (1986) - 1080p x265 HEVC - SWE", "The Sacrifice", "1986"),
         ("Lord.of.the.Rings.The.Two.Towers.2002.1080p", "The Lord of the Rings: The Two Towers", "2002"),
         ("Up.2009.720p.BluRay", "Up", "2009"),
         ("Her.2013.1080p", "Her", "2013"),
