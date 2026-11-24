@@ -181,7 +181,7 @@ class ReleasePickTests(unittest.TestCase):
                 ("Sonic.The.Hedgehog.2020.1080p.WEBRip.x264.AAC2.0", 191, 1.65 * gib),
                 ("Sonic.the.Hedgehog.2020.1080p.BluRay.x264-GECKOS[TGx]", 64, 9.74 * gib),
                 ("Sonic.The.Hedgehog.2020.720p.BluRay.x264.AAC", 40, 908 * mib),
-                ("Sonic.the.Hedgehog.2020.720p.WEBRip.800MB.x264-GalaxyRG", 2, 797 * mib),
+                ("Sonic.the.Hedgehog.2020.720p.WEBRip.800MB.x264-GalaxyRG", 4, 400 * mib),
                 ("Sonic.the.Hedgehog.2020.HC.720p.HDRip.800MB.x264-GalaxyRG", 60, 797 * mib),
             )]
         with contextlib.redirect_stderr(io.StringIO()):

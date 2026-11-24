@@ -306,6 +306,8 @@ def _result_score(result, title):
 
 # Anything smaller is a sample, ebook, or other non-movie file.
 MIN_RELEASE_BYTES = 300 * 1024 ** 2
+# Fewer seeders than this tend to stall or vanish mid-download.
+MIN_SEEDERS = 5
 
 
 def _pick_best_result(results, title, year=""):
@@ -321,8 +323,8 @@ def _pick_best_result(results, title, year=""):
         name = result.get("fileName", "")
         size = result.get("fileSize", -1)
         reason = _non_english_reason(name, title)
-        if not reason and (result.get("nbSeeders", 0) or 0) < 1:
-            reason = "no seeders"
+        if not reason and (result.get("nbSeeders", 0) or 0) < MIN_SEEDERS:
+            reason = f"fewer than {MIN_SEEDERS} seeders"
         if not reason and isinstance(size, (int, float)) and 0 <= size < MIN_RELEASE_BYTES:
             reason = "too small to be the film"
         if reason:
@@ -392,7 +394,7 @@ def run_search(display_name):
             link = _resolve_search_link(raw_url)
             if link:
                 return link, int(size)
-    print(f"No usable English release with seeders found for {display_name}", file=sys.stderr, flush=True)
+    print(f"No usable English release with enough seeders found for {display_name}", file=sys.stderr, flush=True)
     return None, 0
 
 
