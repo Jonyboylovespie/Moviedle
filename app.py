@@ -238,17 +238,25 @@ NON_ENGLISH_TOKENS = {
 }
 DUB_TOKENS = {"dubbed", "dub", "multi", "multisub", "dual"}
 ENGLISH_TOKENS = {"english", "eng"}
-# Quality multipliers applied to seeders, so a slightly less-seeded 1080p
-# release beats a DVDRip, and camera rips are a last resort.
-QUALITY_WEIGHTS = (
-    # 4K files are several times larger and add nothing to six short clips.
-    ({"2160p", "4k", "uhd"}, 0.5),
-    ({"cam", "camrip", "hdcam", "ts", "hdts", "telesync", "tc", "telecine", "hdtc"}, 0.25),
-    ({"dvdscr", "scr", "screener"}, 0.5),
-    ({"dvdrip", "dvd"}, 0.9),
-    ({"1080p"}, 1.25),
-    ({"720p"}, 1.15),
+# Quality factors for release-name tags; the first matching group wins and
+# untagged releases get UNTAGGED_QUALITY. Clips are short and watched in a
+# browser, so 720p is as good as 1080p for the game.
+QUALITY_FACTORS = (
+    # Hardcoded subtitles (often Korean on "HC" releases) can give the answer away.
+    ({"hc", "hardsub", "hardsubs", "hardcoded"}, 0.2),
+    ({"cam", "camrip", "hdcam", "ts", "hdts", "telesync", "tc", "telecine", "hdtc"}, 0.1),
+    ({"dvdscr", "scr", "screener"}, 0.3),
+    ({"480p", "sd", "dvdrip", "dvd", "xvid", "divx"}, 0.6),
+    # Size already penalizes 4K; HDR tone mapping costs extra encode time on top.
+    ({"2160p", "4k", "uhd"}, 0.8),
+    ({"1080p"}, 1.1),
+    ({"720p"}, 1.0),
 )
+UNTAGGED_QUALITY = 0.8
+# Seeders at which a torrent reaches half of its top download speed. More
+# seeders help less and less: 40 vs. 190 seeders barely changes the speed,
+# but a file twice as large always takes twice as long.
+HALF_SPEED_SEEDERS = 10
 
 
 def _release_tokens(text):
@@ -279,72 +287,38 @@ def _non_english_reason(file_name, title):
 
 
 def _result_score(result, title):
+    """Quality per unit of expected download time; higher is better.
+
+    Download time is modelled as size / speed, with speed saturating as
+    seeders / (seeders + HALF_SPEED_SEEDERS). So a 900 MB 720p release with
+    40 seeders beats a 1.65 GB one with 191, while a release with only a
+    handful of seeders still loses to a larger, healthy one.
+    """
     seeders = result.get("nbSeeders", 0) or 0
+    size = result.get("fileSize", -1)
+    if not isinstance(size, (int, float)) or size <= 0:
+        size = UNKNOWN_RELEASE_BYTES
     tokens = set(_non_title_tokens(result.get("fileName", ""), title))
-    for markers, weight in QUALITY_WEIGHTS:
-        if tokens & markers:
-            return seeders * weight
-    return seeders
+    quality = next((factor for markers, factor in QUALITY_FACTORS if tokens & markers), UNTAGGED_QUALITY)
+    speed = seeders / (seeders + HALF_SPEED_SEEDERS)
+    return quality * speed / (size / 1024 ** 3)
 
 
 # Anything smaller is a sample, ebook, or other non-movie file.
 MIN_RELEASE_BYTES = 300 * 1024 ** 2
-LEADING_ARTICLES = {"the", "a", "an"}
-
-
-def _match_tokens(text):
-    """Lowercase, accent-free word tokens for comparing titles to release names."""
-    text = unicodedata.normalize("NFKD", text or "")
-    text = "".join(char for char in text if not unicodedata.combining(char)).lower()
-    text = re.sub(r"['’]", "", text).replace("&", " and ")
-    # Drop a leading "[group]" / "(site)" tag such as "[YTS.MX] Movie 2010".
-    text = re.sub(r"^\s*[\[({][^\])}]*[\])}]\s*", "", text)
-    return [token for token in re.split(r"[\W_]+", text) if token]
-
-
-def _year_offset(file_name, title, year):
-    """How far the release's year is from *year* if the release name starts
-    with the title and is followed by a year; None if it doesn't match.
-
-    Release names are "Title Year ..." ("Beautiful.Boy.2018.1080p"), so this
-    rejects other films that merely contain the title words, like
-    "The Most Beautiful Boy In The World (2021)" or "Beautiful Boy (2010)".
-    """
-    name = _match_tokens(file_name)
-    wanted = _match_tokens(title)
-    variants = [wanted]
-    if len(wanted) > 1 and wanted[0] in LEADING_ARTICLES:
-        variants.append(wanted[1:])  # "Lord of the Rings ..." for "The Lord of the Rings ..."
-    for title_tokens in variants:
-        if name[:len(title_tokens)] != title_tokens:
-            continue
-        if not year:
-            return 0
-        # Allow a few edition words ("Extended Cut") between title and year.
-        for token in name[len(title_tokens):len(title_tokens) + 4]:
-            if re.fullmatch(r"(19|20)\d\d", token):
-                return abs(int(token) - int(year))
-        return None
-    return None
 
 
 def _pick_best_result(results, title, year=""):
-    """Choose the best English release of this exact film, or None.
+    """Choose the best English release with seeders, or None.
 
-    Only results named "<title> <year>" are considered; an exact year is
-    preferred and an off-by-one year (festival vs. release date) is accepted
-    only when no exact match exists. Returns None rather than falling back to
-    a foreign, dead or wrong release: skipping one movie is better than burning
-    a download slot on the wrong one.
+    The search query already names the film and its year, so results are
+    only filtered for language, seeders and size. Returns None rather than
+    falling back to a foreign, dead or sample release: skipping one movie is
+    better than burning a download slot on the wrong one.
     """
-    by_offset = {0: [], 1: []}
-    mismatched = 0
+    candidates = []
     for result in results:
         name = result.get("fileName", "")
-        offset = _year_offset(name, title, year)
-        if offset not in by_offset:
-            mismatched += 1
-            continue
         size = result.get("fileSize", -1)
         reason = _non_english_reason(name, title)
         if not reason and (result.get("nbSeeders", 0) or 0) < 1:
@@ -354,10 +328,7 @@ def _pick_best_result(results, title, year=""):
         if reason:
             print(f"Skipping result for {title} ({year}): {name} ({reason})", file=sys.stderr, flush=True)
             continue
-        by_offset[offset].append(result)
-    if mismatched:
-        print(f"Ignored {mismatched} results not named \"{title} {year}\"", file=sys.stderr, flush=True)
-    candidates = by_offset[0] or by_offset[1]
+        candidates.append(result)
     if not candidates:
         return None
     return max(candidates, key=lambda r: _result_score(r, title))
@@ -368,15 +339,16 @@ def _split_display_name(display_name):
     return (match.group(1), match.group(2)) if match else (display_name or "", "")
 
 
-def _search_queries(title):
-    """Search for the bare title: indexers match names like "Title.2018.1080p"
-    poorly when the query contains "(2018)". Punctuation is dropped since
-    release names rarely keep it; the raw title is a fallback."""
+def _search_queries(title, year=""):
+    """Search "Title Year" without parentheses: it matches release names like
+    "Title.2018.1080p" and keeps sequels and same-named films out, while
+    "(2018)" matches poorly. Punctuation is dropped since release names rarely
+    keep it; the raw title is a fallback."""
     simplified = unicodedata.normalize("NFKD", title)
     simplified = "".join(char for char in simplified if not unicodedata.combining(char))
     simplified = re.sub(r"['’]", "", simplified)
     simplified = " ".join(re.sub(r"[^\w\s]", " ", simplified).split())
-    return list(dict.fromkeys(q for q in (simplified, title) if q))
+    return list(dict.fromkeys(" ".join(filter(None, (q, year))) for q in (simplified, title) if q))
 
 
 def _search_all(opener, query):
@@ -403,7 +375,7 @@ def run_search(display_name):
     """
     title, year = _split_display_name(display_name)
     opener = _build_opener()
-    for query in _search_queries(title):
+    for query in _search_queries(title, year):
         results = _search_all(opener, query)
         print(f"Search \"{query}\" returned {len(results)} results", file=sys.stderr, flush=True)
         best = _pick_best_result(results, title, year)

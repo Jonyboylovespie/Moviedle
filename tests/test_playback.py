@@ -154,6 +154,41 @@ def add_movie(project, name, difficulty, clip_bytes=b"not really a video"):
     return folder
 
 
+class ReleasePickTests(unittest.TestCase):
+    @staticmethod
+    def _results(*rows):
+        return [{"fileName": n, "nbSeeders": s, "fileSize": 2 * 1024 ** 3} for n, s in rows]
+
+    def test_search_names_title_and_year_without_parentheses(self):
+        self.assertEqual(app._search_queries("Sonic the Hedgehog", "2020"), ["Sonic the Hedgehog 2020"])
+        self.assertEqual(app._search_queries("Amélie", "2001"), ["Amelie 2001", "Amélie 2001"])
+        self.assertEqual(app._search_queries("Sonic the Hedgehog"), ["Sonic the Hedgehog"])
+
+    def test_picks_best_seeded_english_release(self):
+        results = self._results(
+            ("Sonic The Hedgehog 2020 1080p BluRay (Multi Audio) HEVC H265 HDR", 300),
+            ("Sonic.the.Hedgehog.2020.HC.HDRip.XviD.AC3-EVO[TGx]", 9),
+            ("Sonic.The.Hedgehog.2020.1080p.WEBRip.x264.AAC2.0", 191),
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            best = app._pick_best_result(results, "Sonic the Hedgehog", "2020")
+        self.assertEqual(best["fileName"], "Sonic.The.Hedgehog.2020.1080p.WEBRip.x264.AAC2.0")
+
+    def test_smaller_well_seeded_release_beats_most_seeded(self):
+        gib, mib = 1024 ** 3, 1024 ** 2
+        results = [
+            {"fileName": n, "nbSeeders": s, "fileSize": int(z)} for n, s, z in (
+                ("Sonic.The.Hedgehog.2020.1080p.WEBRip.x264.AAC2.0", 191, 1.65 * gib),
+                ("Sonic.the.Hedgehog.2020.1080p.BluRay.x264-GECKOS[TGx]", 64, 9.74 * gib),
+                ("Sonic.The.Hedgehog.2020.720p.BluRay.x264.AAC", 40, 908 * mib),
+                ("Sonic.the.Hedgehog.2020.720p.WEBRip.800MB.x264-GalaxyRG", 2, 797 * mib),
+                ("Sonic.the.Hedgehog.2020.HC.720p.HDRip.800MB.x264-GalaxyRG", 60, 797 * mib),
+            )]
+        with contextlib.redirect_stderr(io.StringIO()):
+            best = app._pick_best_result(results, "Sonic the Hedgehog", "2020")
+        self.assertEqual(best["fileName"], "Sonic.The.Hedgehog.2020.720p.BluRay.x264.AAC")
+
+
 class GameTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="moviedle-game-")
