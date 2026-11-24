@@ -361,7 +361,7 @@ class BrowserTests(GameTestCase):
 
     SCREENSHOT = os.path.join(tempfile.gettempdir(), "moviedle-player-check.png")
 
-    def test_player_shows_whole_clip_and_reports_broken_ones(self):
+    def test_player_shows_whole_clip_skips_and_reports_broken_ones(self):
         from werkzeug.serving import make_server
 
         # A wide 1920x800 clip made by the real encoder from a 10-bit source.
@@ -400,6 +400,13 @@ class BrowserTests(GameTestCase):
         self.assertEqual(good["objectFit"], "contain")
         self.assertEqual((good["transform"], good["animationName"], good["filter"]), ("none", "none", "none"))
         self.assertTrue(good["messageHidden"])
+
+        skip = report["skip"]
+        self.assertEqual(skip["labels"], ["Skip", "Guess", "Skip"])
+        self.assertIn("1s.mp4", skip["srcAfterEnter"])
+        self.assertIn("2s.mp4", skip["srcAfterClick"])
+        self.assertEqual(skip["feedback"], "Skipped! Attempt 1 / 6")
+        self.assertEqual(skip["labelAfterSkip"], "Skip")
 
         self.assertTrue(broken["shown"], broken)
         self.assertIn("couldn't play", broken["text"])

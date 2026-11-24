@@ -169,6 +169,7 @@ button:disabled{cursor:not-allowed;opacity:.45;filter:saturate(.3)}
 #guess-input{width:100%;padding:13px 18px;border-radius:999px;border:0;font:inherit;font-size:1.05rem;
   color:var(--cream);background:#140b06;box-shadow:inset 0 2px 5px #000,0 0 0 2px var(--brass-lo)}
 #guess-input::placeholder{color:#a68c6a}
+#guess-btn{min-width:6.5em}
 #guess-input:focus{outline:none;box-shadow:inset 0 2px 5px #000,0 0 0 3px var(--tungsten),0 0 20px rgba(255,178,74,.35)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 #autofill-dropdown{position:absolute;left:8px;right:8px;top:calc(100% + 6px);z-index:10;margin:0;padding:6px;list-style:none;
@@ -269,7 +270,7 @@ button:disabled{cursor:not-allowed;opacity:.45;filter:saturate(.3)}
                 role="combobox" aria-expanded="false" aria-controls="autofill-dropdown" aria-autocomplete="list">
               <ul id="autofill-dropdown" role="listbox" hidden></ul>
             </div>
-            <button id="guess-btn" class="btn">Guess</button>
+            <button id="guess-btn" class="btn">Skip</button>
             <button id="give-up-btn" class="btn ghost">Give Up</button>
           </div>
         </div>
@@ -409,8 +410,14 @@ function highlightOption(index) {
     }
 }
 
+// With nothing typed, the guess button skips to the next clip instead.
+function updateGuessBtn() {
+    guessBtn.textContent = guessInput.value.trim() ? 'Guess' : 'Skip';
+}
+
 function pickOption(option) {
     guessInput.value = option.dataset.name;
+    updateGuessBtn();
     closeDropdown();
     guessInput.focus();
 }
@@ -557,6 +564,7 @@ function startGame(data) {
     feedback.textContent = '';
     feedback.className = '';
     guessInput.value = '';
+    updateGuessBtn();
     guessInput.disabled = false;
     guessBtn.disabled = false;
     giveUpBtn.disabled = false;
@@ -626,10 +634,27 @@ async function revealMovie() {
     }
 }
 
-async function submitGuess() {
+async function nextClip(message) {
+    attempt += 1;
+    feedback.textContent = `${message} Attempt ${attempt} / ${currentClips.length}`;
+    feedback.className = 'bad';
+    guessInput.value = '';
+    updateGuessBtn();
+    closeDropdown();
+    if (attempt >= currentClips.length) {
+        await revealMovie();
+    } else {
+        loadClip(attempt);
+    }
+}
+
+async function submitGuess({skipIfEmpty = false} = {}) {
     if (!isGameActive) return;
     const guess = guessInput.value.trim();
-    if (!guess) return;
+    if (!guess) {
+        if (skipIfEmpty) await nextClip('Skipped!');
+        return;
+    }
     try {
         const response = await fetch('/game/guess', {
             method: 'POST',
@@ -652,22 +677,13 @@ async function submitGuess() {
             updateMovieCount();
             return;
         }
-        attempt += 1;
-        feedback.textContent = `Wrong! Attempt ${attempt} / ${currentClips.length}`;
-        feedback.className = 'bad';
-        guessInput.value = '';
-        closeDropdown();
-        if (attempt >= currentClips.length) {
-            await revealMovie();
-        } else {
-            loadClip(attempt);
-        }
+        await nextClip('Wrong!');
     } catch (error) {
         feedback.textContent = 'Error checking guess.';
     }
 }
 
-guessBtn.addEventListener('click', submitGuess);
+guessBtn.addEventListener('click', () => submitGuess({skipIfEmpty: true}));
 giveUpBtn.addEventListener('click', revealMovie);
 guessInput.addEventListener('keydown', (event) => {
     const options = dropdownOptions();
@@ -697,6 +713,7 @@ guessInput.addEventListener('keydown', (event) => {
 
 let searchRequest = 0;
 guessInput.addEventListener('input', () => {
+    updateGuessBtn();
     const value = guessInput.value.trim();
     clearTimeout(searchTimeout);
     const requestId = ++searchRequest;

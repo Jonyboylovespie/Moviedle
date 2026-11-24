@@ -106,6 +106,29 @@ async function main() {
     });
     writeFileSync(screenshotPath, Buffer.from(clip.result.data, 'base64'));
 
+    const skip = await evaluate(`(async () => {
+        ${helpers}
+        const input = document.getElementById('guess-input');
+        const button = document.getElementById('guess-btn');
+        const type = (text) => { input.value = text; input.dispatchEvent(new Event('input')); };
+        const labels = [button.textContent];
+        type('Wide'); labels.push(button.textContent);
+        type('  '); labels.push(button.textContent);
+        // Enter on an empty field must not skip.
+        input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const srcAfterEnter = video.currentSrc;
+        button.click();
+        await waitFor(() => /2s\.mp4/.test(video.currentSrc));
+        return {
+            labels,
+            srcAfterEnter,
+            srcAfterClick: video.currentSrc,
+            feedback: document.getElementById('feedback').textContent,
+            labelAfterSkip: button.textContent,
+        };
+    })()`);
+
     const broken = await evaluate(`(async () => {
         ${helpers}
         await playDifficulty('medium');
@@ -119,7 +142,7 @@ async function main() {
     })()`);
 
     ws.close();
-    return { good, broken };
+    return { good, skip, broken };
 }
 
 try {
