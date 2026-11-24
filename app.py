@@ -306,34 +306,141 @@ def _result_score(result, title):
 
 # Anything smaller is a sample, ebook, or other non-movie file.
 MIN_RELEASE_BYTES = 300 * 1024 ** 2
+# Larger releases (remuxes, 4K) take too long to download and encode.
+MAX_RELEASE_BYTES = 5 * 1024 ** 3
 # Fewer seeders than this tend to stall or vanish mid-download.
 MIN_SEEDERS = 5
 
+LEADING_ARTICLES = {"the", "a", "an"}
+# Words allowed between the title and the year in "Title [edition] Year".
+EDITION_WORDS = {
+    "the", "extended", "cut", "directors", "director", "dc", "ddc", "unrated", "uncut",
+    "theatrical", "remastered", "special", "edition", "imax", "final", "ultimate",
+    "collectors", "anniversary", "criterion", "redux", "proper", "repack",
+}
+# Release names and titles mix "II" and "2" for sequels.
+ROMAN_NUMERALS = {"ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9"}
+PACK_WORDS = {"collection", "trilogy", "duology", "quadrilogy", "anthology", "boxset", "pack"}
+YEAR_RE = re.compile(r"(19|20)\d\d")
+
+# _title_match tiers, best first.
+TITLE_PREFIX_EXACT = 3     # "Title [edition] Year ..."
+TITLE_ANYWHERE_EXACT = 2   # "Rambo First Blood 1982", "El Camino A Breaking Bad Movie 2019"
+TITLE_PREFIX_NEAR = 1      # "Title Year±1": festival vs. release date
+
+
+def _match_tokens(text):
+    """Lowercase, accent-free word tokens for comparing titles to release names."""
+    text = unicodedata.normalize("NFKD", text or "")
+    text = "".join(char for char in text if not unicodedata.combining(char)).lower()
+    text = re.sub(r"['’]", "", text).replace("&", " and ")
+    # Drop a leading "[group]" / "(site)" tag such as "[YTS.MX] Movie 2010".
+    text = re.sub(r"^\s*[\[({][^\])}]*[\])}]\s*", "", text)
+    # Join dotted initials so "E.T." and "ET" match.
+    text = re.sub(r"\b(\w)\.(?=\w\b)", r"\1", text)
+    return [ROMAN_NUMERALS.get(token, token) for token in re.split(r"[\W_]+", text) if token]
+
+
+def _title_variants(title):
+    wanted = _match_tokens(title)
+    if len(wanted) > 1 and wanted[0] in LEADING_ARTICLES:
+        return [wanted, wanted[1:]]  # "Lord of the Rings ..." for "The Lord of the Rings ..."
+    return [wanted]
+
+
+def _title_match(file_name, title, year):
+    """How well a release name matches "Title (Year)": one of the TITLE_* tiers,
+    or 0 if it looks like a different film.
+
+    The best match starts with the title and is followed by the year, allowing
+    edition words in between. Names that only contain the title and then the
+    exact year are accepted too, but only for titles of two or more words:
+    for one-word titles like "It" or "Crew" that matches other films
+    ("Too Small To Take It All 2017", "The Clean Up Crew 2024").
+    """
+    name = _match_tokens(file_name)
+    variants = _title_variants(title)
+    if not variants[0]:
+        return 0
+    for title_tokens in variants:
+        if name[:len(title_tokens)] != title_tokens:
+            continue
+        if not year:
+            return TITLE_PREFIX_EXACT
+        for token in name[len(title_tokens):len(title_tokens) + 4]:
+            if YEAR_RE.fullmatch(token):
+                offset = abs(int(token) - int(year))
+                if offset == 0:
+                    return TITLE_PREFIX_EXACT
+                if offset == 1:
+                    return TITLE_PREFIX_NEAR
+                break
+            if token not in EDITION_WORDS:
+                break
+    if not year or len(variants[-1]) < 2:
+        return 0
+    for title_tokens in variants:
+        width = len(title_tokens)
+        for start in range(len(name) - width + 1):
+            if name[start:start + width] == title_tokens and year in name[start + width:]:
+                return TITLE_ANYWHERE_EXACT
+    return 0
+
+
+def _pack_reason(file_name, title, year):
+    """Why a release looks like a multi-film pack or a TV episode, or None."""
+    if re.search(r"\s\+\s", file_name or ""):
+        return "multi-film pack"
+    tokens = _match_tokens(file_name)
+    for title_token in _match_tokens(title):
+        if title_token in tokens:
+            tokens.remove(title_token)
+    if set(tokens) & PACK_WORDS:
+        return "multi-film pack"
+    if any(re.fullmatch(r"s\d{1,2}e\d{1,3}", token) for token in tokens):
+        return "TV episode"
+    # A year off by one is the same film (festival vs. release date).
+    other_years = {t for t in tokens if YEAR_RE.fullmatch(t) and year and abs(int(t) - int(year)) > 1}
+    if other_years:
+        return f"other year {sorted(other_years)}"
+    return None
+
 
 def _pick_best_result(results, title, year=""):
-    """Choose the best English release with seeders, or None.
+    """Choose the best English release of this film, or None.
 
-    The search query already names the film and its year, so results are
-    only filtered for language, seeders and size. Returns None rather than
-    falling back to a foreign, dead or sample release: skipping one movie is
-    better than burning a download slot on the wrong one.
+    Only releases named for this film are considered (see _title_match), and
+    the best-matching tier wins before size and seeders are weighed. Returns
+    None rather than falling back to a foreign, dead, oversized or wrong
+    release: skipping one movie is better than burning a download slot on
+    the wrong one.
     """
     candidates = []
+    mismatched = 0
     for result in results:
         name = result.get("fileName", "")
+        tier = _title_match(name, title, year)
+        if not tier:
+            mismatched += 1
+            continue
         size = result.get("fileSize", -1)
-        reason = _non_english_reason(name, title)
+        reason = _pack_reason(name, title, year) or _non_english_reason(name, title)
         if not reason and (result.get("nbSeeders", 0) or 0) < MIN_SEEDERS:
             reason = f"fewer than {MIN_SEEDERS} seeders"
         if not reason and isinstance(size, (int, float)) and 0 <= size < MIN_RELEASE_BYTES:
             reason = "too small to be the film"
+        if not reason and isinstance(size, (int, float)) and size > MAX_RELEASE_BYTES:
+            reason = f"larger than {MAX_RELEASE_BYTES / 1024 ** 3:.0f} GB"
         if reason:
             print(f"Skipping result for {title} ({year}): {name} ({reason})", file=sys.stderr, flush=True)
             continue
-        candidates.append(result)
+        candidates.append((tier, result))
+    if mismatched:
+        print(f"Ignored {mismatched} results not named for {title} ({year})", file=sys.stderr, flush=True)
     if not candidates:
         return None
-    return max(candidates, key=lambda r: _result_score(r, title))
+    best_tier = max(tier for tier, _ in candidates)
+    return max((r for tier, r in candidates if tier == best_tier), key=lambda r: _result_score(r, title))
 
 
 def _split_display_name(display_name):
